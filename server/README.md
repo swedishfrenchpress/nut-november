@@ -38,7 +38,7 @@ Coco's default watchers/processors observe the mint and collect paid quotes; its
 
 `src/index.ts` opens Coco's database, awaits `initializeCoco()`, configures the mint and passes the manager directly to the donation service. The donation module contains the creation/capacity checks and public response mapping. Shutdown drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
 
-Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. New requests are limited to 10 per client IP and 60 globally per fixed minute. On Fly, the client IP comes from Fly's proxy header; elsewhere it is the socket address. Every submission consumes a request slot, including failures.
+Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. New requests are limited to 3 per client IP per fixed 10-minute window and 50 globally per fixed minute. A limited request returns HTTP 429 with `Retry-After` set to the remaining seconds in the blocking window. On Fly, the client IP comes from Fly's proxy header; elsewhere it is the socket address. Every admitted submission consumes a request slot, including invoice creation failures; rate-limit rejections do not consume slots.
 
 `MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at the configured mint, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
 

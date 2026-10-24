@@ -118,13 +118,13 @@ test('only donor metadata and the operation association are saved; Coco supplies
 
 test('each submission creates a new invoice, including concurrent identical submissions', async () => {
   const h = harness();
-  const responses = await Promise.all(Array.from({ length: 5 }, () => h.post(input())));
+  const responses = await Promise.all(Array.from({ length: 3 }, () => h.post(input())));
   const payments = await Promise.all(responses.map((response) => response.json() as Promise<DonationPayment>));
   expect(responses.every((response) => response.status === 201)).toBe(true);
-  expect(new Set(payments.map((payment) => payment.id)).size).toBe(5);
-  expect(new Set(payments.map((payment) => payment.invoice)).size).toBe(5);
-  expect(h.coco.creations).toBe(5);
-  expect(h.store.list()).toHaveLength(5);
+  expect(new Set(payments.map((payment) => payment.id)).size).toBe(3);
+  expect(new Set(payments.map((payment) => payment.invoice)).size).toBe(3);
+  expect(h.coco.creations).toBe(3);
+  expect(h.store.list()).toHaveLength(3);
 });
 
 test('creation is serialized and shutdown waits for Coco persistence and metadata commits', async () => {
@@ -307,21 +307,40 @@ test('CORS, methods, amount limits, body limits and message policy are enforced'
   expect(h.store.get(payment.id)!.message).toBe('');
 });
 
-test('invoice request limits persist across restart and every new submission consumes a slot', async () => {
+test('three attempts per IP count failures, survive restart and reset after ten minutes', async () => {
   const h = harness();
-  for (let i = 0; i < 10; i++) expect((await h.post(input())).status).toBe(201);
-  expect((await h.post(input())).status).toBe(429);
+  const clock = spyOn(Date, 'now').mockReturnValue(600_001);
+  cleanups.push(() => { clock.mockRestore(); });
+  h.coco.failCreate = true;
+  expect((await h.post(input())).status).toBe(500);
+  h.coco.failCreate = false;
+  for (let i = 0; i < 2; i++) expect((await h.post(input())).status).toBe(201);
+  const blocked = await h.post(input());
+  expect(blocked.status).toBe(429);
+  expect(blocked.headers.get('Retry-After')).toBe('600');
   h.restart();
+  clock.mockReturnValue(660_001);
   expect((await h.post(input())).status).toBe(429);
-  expect(h.coco.creations).toBe(10);
+  expect(h.coco.creations).toBe(3);
   expect((await h.post(input(), undefined, 'another-ip')).status).toBe(201);
+  clock.mockReturnValue(1_200_000);
+  expect((await h.post(input())).status).toBe(201);
 });
 
-test('global rate limiting bounds requests across clients', async () => {
+test('fifty global requests reset each minute and rejected requests do not consume client slots', async () => {
   const h = harness();
-  for (let i = 0; i < 60; i++) expect((await h.post(input(), undefined, `client-${i}`)).status).toBe(201);
+  const clock = spyOn(Date, 'now').mockReturnValue(600_001);
+  cleanups.push(() => { clock.mockRestore(); });
+  for (let i = 0; i < 50; i++) expect((await h.post(input(), undefined, `client-${i}`)).status).toBe(201);
+  const blocked = await h.post(input(), undefined, 'new-client');
+  expect(blocked.status).toBe(429);
+  expect(blocked.headers.get('Retry-After')).toBe('60');
+  expect(h.coco.creations).toBe(50);
+  h.restart();
   expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
-  expect(h.coco.creations).toBe(60);
+  clock.mockReturnValue(660_000);
+  for (let i = 0; i < 3; i++) expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
+  expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
 });
 
 test('wallet identity guards against the wrong seed and missing database pair', async () => {

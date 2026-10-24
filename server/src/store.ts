@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { eq, lt, sql } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
 import { donations, rateLimits, settings, type DonationRow } from "./schema.ts";
 import { ApiError } from "./errors.ts";
@@ -36,13 +36,16 @@ export class DonationStore {
 
   consumeRateLimit(client: string, now = Date.now()) {
     this.db.transaction(() => {
-      const windowStart = Math.floor(now / 60_000) * 60_000;
-      this.db.delete(rateLimits).where(lt(rateLimits.windowStart, windowStart)).run();
-      for (const [key, limit] of [[`client:${client}`, 10], ["global", 60]] as const) {
+      const clientWindowMs = 10 * 60_000;
+      this.db.delete(rateLimits).where(lt(rateLimits.windowStart, Math.floor(now / clientWindowMs) * clientWindowMs)).run();
+      for (const [key, limit, windowMs] of [[`client:${client}`, 3, clientWindowMs], ["global", 50, 60_000]] as const) {
+        const windowStart = Math.floor(now / windowMs) * windowMs;
         const old = this.db.select().from(rateLimits).where(eq(rateLimits.key, key)).get();
-        if (old && old.count >= limit) throw new ApiError(429, "rate_limit", "Too many invoice requests. Please try again in a minute.");
-        this.db.insert(rateLimits).values({ key, windowStart, count: 1 }).onConflictDoUpdate({
-          target: rateLimits.key, set: { count: sql`${rateLimits.count} + 1` },
+        const count = old?.windowStart === windowStart ? old.count : 0;
+        if (count >= limit) throw new ApiError(429, "rate_limit", "Too many invoice requests. Please try again later.",
+          Math.ceil((windowStart + windowMs - now) / 1000));
+        this.db.insert(rateLimits).values({ key, windowStart, count: count + 1 }).onConflictDoUpdate({
+          target: rateLimits.key, set: { windowStart, count: count + 1 },
         }).run();
       }
     });

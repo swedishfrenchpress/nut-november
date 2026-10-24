@@ -62,7 +62,7 @@ export function createHandler(service: DonationService,
       throw new ApiError(404, "not_found", "Not found.");
     } catch (error) {
       if (error instanceof ApiError) {
-        if (error.status === 429) headers.set("Retry-After", "60");
+        if (error.retryAfterSeconds !== undefined) headers.set("Retry-After", String(error.retryAfterSeconds));
         return json({ error: { code: error.code, message: error.message } }, error.status);
       }
       console.error("Donation API request failed");
