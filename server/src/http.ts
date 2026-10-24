@@ -23,15 +23,9 @@ async function readBody(request: Request): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-async function waitForCreation(job: Promise<void>, timeoutMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try { await Promise.race([job, new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]); }
-  finally { clearTimeout(timer); }
-}
-
 export function createHandler(service: DonationService,
   config: Pick<Config, "origins" | "publicUrl" | "minSats" | "maxSats">,
-  options: { ready?: () => boolean; creationWaitMs?: number } = {}) {
+  options: { ready?: () => boolean } = {}) {
   return async (request: Request, clientIp = "unknown"): Promise<Response> => {
     const origin = request.headers.get("origin");
     const headers = new Headers({ "Cache-Control": "no-store", "Vary": "Origin", "X-Content-Type-Options": "nosniff" });
@@ -57,20 +51,13 @@ export function createHandler(service: DonationService,
         catch { throw new ApiError(400, "invalid_json", "Invalid JSON body."); }
         const input = parseDonationRequest(value, config.minSats, config.maxSats);
         const identity = verifyDonorIdentity(request.headers.get("authorization"), raw, `${config.publicUrl}/donate`);
-        const { row, created } = service.reserve(input, identity, sha256(clientIp));
-        await waitForCreation(service.ensure(row.id), options.creationWaitMs ?? 5000);
-        const current = service.store.get(row.id)!;
-        const payment = service.store.payment(current);
-        if (payment.status === "creating") headers.set("Retry-After", "2");
-        return json(payment, payment.status === "creating" ? 202 : created ? 201 : 200);
+        return json(await service.create(input, identity?.pubkey ?? null, sha256(clientIp)), 201);
       }
       const match = /^\/donate\/([0-9a-f-]{36})$/.exec(url.pathname);
       if (match && request.method === "GET") {
-        const row = service.store.get(match[1]);
-        if (!row) throw new ApiError(404, "not_found", "Donation not found.");
-        return json(service.store.payment(row));
+        return json(await service.get(match[1]));
       }
-      if (url.pathname === "/donations" && request.method === "GET") return json(service.store.feed());
+      if (url.pathname === "/donations" && request.method === "GET") return json(await service.feed());
       if (url.pathname === "/donate" || url.pathname === "/donations" || match) throw new ApiError(405, "method", "Method not allowed.");
       throw new ApiError(404, "not_found", "Not found.");
     } catch (error) {
@@ -79,7 +66,9 @@ export function createHandler(service: DonationService,
         return json({ error: { code: error.code, message: error.message } }, error.status);
       }
       console.error("Donation API request failed");
-      return json({ error: { code: "internal", message: "The donation service is temporarily unavailable. Please retry." } }, 500);
+      return json({ error: { code: "internal", message: request.method === "POST"
+        ? "We couldn't create an invoice. Please request a new one."
+        : "Payment information is temporarily unavailable." } }, 500);
     }
   };
 }

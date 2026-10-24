@@ -6,11 +6,12 @@ import type { DonationPayment } from "../../../../shared/donations";
 
 interface InvoiceDisplayProps {
   payment: DonationPayment;
+  checking: boolean;
   error: string | null;
   onBack: () => void;
 }
 
-export default function InvoiceDisplay({ payment, error, onBack }: InvoiceDisplayProps) {
+export default function InvoiceDisplay({ payment, checking, error, onBack }: InvoiceDisplayProps) {
   const { invoice, amountSats: amount } = payment;
   const [copied, setCopied] = useState<"yes" | "failed" | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -27,14 +28,14 @@ export default function InvoiceDisplay({ payment, error, onBack }: InvoiceDispla
 
   const received = payment.paymentReceived || payment.status === "paid";
   const expired = !received && payment.expiresAt !== null && payment.expiresAt <= now;
-  const payable = invoice && !expired && !received && payment.status === "pending";
+  const payable = !checking && !expired && !received && payment.status === "pending";
   const status = received
     ? payment.status === "review" ? "Payment received. Collection needs attention; please don't pay again." : "Payment received! Adding your donation to the pool…"
-    : payment.status === "review" ? "We're checking this donation. Please wait before paying again."
+    : checking ? "Checking your payment…"
+      : payment.status === "review" ? "We're checking this donation. Please wait before paying again."
       : payment.status === "failed" ? "This invoice could not be completed. You can start a new donation."
         : expired ? "This invoice has expired. If you already paid, leave this page open while we check."
-          : payment.status === "creating" ? invoice ? "Checking your payment…" : "Preparing your invoice… You can safely refresh this page."
-            : "Waiting for payment…";
+          : "Waiting for payment…";
 
   const handleCopy = async () => {
     if (!invoice) return;
@@ -57,7 +58,7 @@ export default function InvoiceDisplay({ payment, error, onBack }: InvoiceDispla
 
       {payable && <div className="w-full max-w-[300px] border-4 border-bark bg-white p-4">
         <QRCodeSVG
-          value={invoice!}
+          value={invoice}
           size={256}
           fgColor="#43200C"
           style={{ height: "auto", maxWidth: "100%", width: "100%" }}

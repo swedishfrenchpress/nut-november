@@ -24,11 +24,9 @@ import { createDonation, DONATION_SESSION_KEY, signDonationRequest } from "../li
 import { DONATION_MAX_SATS, isDonationPayment, type DonationPayment, type DonationRequest } from "../../../shared/donations";
 
 const PRESETS = [21, 1000, 21000];
-type Attempt = { request: DonationRequest; identity: "anonymous" | "profile"; payment?: DonationPayment };
-
-function remember(attempt: Attempt | null) {
+function remember(payment: DonationPayment | null) {
   try {
-    if (attempt) sessionStorage.setItem(DONATION_SESSION_KEY, JSON.stringify(attempt));
+    if (payment) sessionStorage.setItem(DONATION_SESSION_KEY, JSON.stringify(payment));
     else sessionStorage.removeItem(DONATION_SESSION_KEY);
   } catch { /* Payment remains usable if storage is unavailable. */ }
 }
@@ -60,9 +58,8 @@ function Page() {
   const isSubmitting = submission !== null;
   const [initialPayment, setInitialPayment] = useState<DonationPayment | null>(null);
   const [restoring, setRestoring] = useState(true);
-  const attempt = useRef<Attempt | null>(null);
   const submitting = useRef(false);
-  const { payment, error: paymentError } = useDonationPayment(initialPayment);
+  const { payment, checking, error: paymentError } = useDonationPayment(initialPayment);
 
   useEffect(() => {
     let active = true;
@@ -70,19 +67,10 @@ function Page() {
     void Promise.resolve().then(() => {
       if (!active) return;
       try {
-        const saved = JSON.parse(sessionStorage.getItem(DONATION_SESSION_KEY) ?? "null") as Attempt | null;
-        if (saved && ["anonymous", "profile"].includes(saved.identity) && typeof saved.request?.requestId === "string"
-          && Number.isSafeInteger(saved.request.amountSats) && saved.request.amountSats > 0
-          && saved.request.amountSats <= DONATION_MAX_SATS && typeof saved.request.message === "string") {
-          attempt.current = saved;
-          setAmount(String(saved.request.amountSats));
-          setMessage(saved.request.message);
-          setIdentity(saved.identity);
-          if (isDonationPayment(saved.payment)) {
-            // Recheck with the API before offering payment or showing success.
-            // Preserve any previously observed payment while that check is offline.
-            setInitialPayment({ ...saved.payment, status: "creating" });
-          }
+        const saved: unknown = JSON.parse(sessionStorage.getItem(DONATION_SESSION_KEY) ?? "null");
+        if (isDonationPayment(saved)) {
+          setAmount(String(saved.amountSats));
+          setInitialPayment(saved);
         }
       } catch { /* Ignore an unreadable session cache. */ }
       setRestoring(false);
@@ -91,10 +79,7 @@ function Page() {
   }, []);
 
   useEffect(() => {
-    if (payment && attempt.current?.payment?.id === payment.id) {
-      attempt.current.payment = payment;
-      remember(attempt.current);
-    }
+    if (payment) remember(payment);
   }, [payment]);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -113,12 +98,8 @@ function Page() {
     setSubmission(identity === "profile" ? "signing" : "invoice");
 
     try {
-      const content = canIncludeDonationMessage(sats) ? message.trim() : "";
-      if (!attempt.current || attempt.current.request.amountSats !== sats
-        || attempt.current.request.message !== content || attempt.current.identity !== identity) {
-        attempt.current = { request: { requestId: crypto.randomUUID(), amountSats: sats, message: content }, identity };
-      }
-      remember(attempt.current);
+      const request: DonationRequest = { amountSats: sats,
+        message: canIncludeDonationMessage(sats) ? message.trim() : "" };
       let authorization: string | undefined;
       if (identity === "profile") {
         const signer = (window as Window & { nostr?: WindowNostr }).nostr;
@@ -127,7 +108,7 @@ function Page() {
           return;
         }
         try {
-          authorization = await signDonationRequest(JSON.stringify(attempt.current.request), signer);
+          authorization = await signDonationRequest(JSON.stringify(request), signer);
         } catch {
           setSubmissionError("Your extension didn't sign the donation request. Try again, or choose Anonymous.");
           return;
@@ -135,12 +116,12 @@ function Page() {
       }
 
       setSubmission("invoice");
-      const next = await createDonation(attempt.current.request, authorization);
-      attempt.current.payment = next;
-      remember(attempt.current);
+      const next = await createDonation(request, authorization);
+      remember(next);
       setInitialPayment(next);
     } catch (err) {
-      setSubmissionError(err instanceof Error ? err.message : "We couldn't create an invoice. Please try again.");
+      setSubmissionError(err instanceof Error && err.name !== "TypeError" && err.name !== "TimeoutError"
+        ? err.message : "We couldn't create an invoice. Please request a new one.");
     } finally {
       setSubmission(null);
       submitting.current = false;
@@ -149,7 +130,6 @@ function Page() {
 
   function handleBack() {
     setInitialPayment(null);
-    attempt.current = null;
     remember(null);
   }
 
@@ -159,7 +139,7 @@ function Page() {
     setMessage("");
   }
 
-  if (payment?.status === "confirmed") {
+  if (!checking && payment?.status === "confirmed") {
     return (
       <PacketPage title="Thank you!">
         <SuccessMessage amount={payment.amountSats} onReset={handleReset} />
@@ -176,7 +156,7 @@ function Page() {
 
       <div className="mx-auto mt-12 max-w-md">
         {restoring ? <p role="status" className={fieldHint}>Checking for an unfinished donation…</p> : payment ? (
-          <InvoiceDisplay payment={payment} error={paymentError} onBack={handleBack} />
+          <InvoiceDisplay payment={payment} checking={checking} error={paymentError} onBack={handleBack} />
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
             <fieldset disabled={isSubmitting}>

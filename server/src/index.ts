@@ -16,8 +16,8 @@ const walletAlreadyExists = existsSync(walletPath) && statSync(walletPath).size 
 const store = new DonationStore(join(config.dataDir, "app.sqlite"));
 store.bindWallet(sha256(config.seed), config.mintUrl, walletAlreadyExists);
 const wallet = await CocoWallet.open(walletPath, config.seed, config.mintUrl, config);
-const service = new DonationService(store, wallet, config);
-let ready = false;
+const service = new DonationService(store, wallet);
+let ready = true;
 const handler = createHandler(service, config, { ready: () => ready });
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: 4096,
@@ -27,8 +27,6 @@ const server = Bun.serve({
     return handler(request, client);
   },
 });
-await service.start();
-ready = true;
 console.info(`Donation API listening on port ${config.port}`);
 
 let stopping = false;
@@ -39,7 +37,6 @@ async function shutdown() {
   const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
     await server.stop();
-    await service.stop();
     await wallet.close();
     store.close();
     clearTimeout(deadline);

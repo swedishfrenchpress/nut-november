@@ -1,37 +1,31 @@
 import { Database } from "bun:sqlite";
 import { initializeCoco, type Manager, type MintOperation, type MintQuote } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
+import { ApiError } from "./errors.ts";
 
-export interface WalletQuote {
+type WalletLimits = { minSats: number; maxSats: number; maxPending: number };
+export interface WalletOperation {
   id: string;
   amount: number;
   invoice: string;
   expiresAt: number | null;
+  updatedAt: number;
+  state: Exclude<MintOperation["state"], "init">;
   paid: boolean;
-}
-export interface WalletOperation {
-  id: string;
-  quoteId: string;
-  amount: number;
-  state: MintOperation["state"];
   error?: string;
 }
 export interface DonationWallet {
-  createQuote(amount: number): Promise<WalletQuote>;
-  getQuote(id: string): Promise<WalletQuote | null>;
-  prepare(quoteId: string, amount: number): Promise<WalletOperation>;
+  createInvoice(amount: number): Promise<WalletOperation>;
   getOperation(id: string): Promise<WalletOperation | null>;
-  listByQuote(id: string): Promise<WalletOperation[]>;
-  refresh(id: string): Promise<void>;
-  onChange(listener: () => void): () => void;
   close(): Promise<void>;
 }
 
 export class CocoWallet implements DonationWallet {
-  private quoteQueue: Promise<unknown> = Promise.resolve();
-  private constructor(readonly manager: Manager, private database: Database, private mintUrl: string) {}
+  private creationQueue: Promise<unknown> = Promise.resolve();
+  private constructor(private manager: Manager, private database: Database,
+    private mintUrl: string, private maxPending: number) {}
 
-  static async open(filename: string, seed: Uint8Array, mintUrl: string, limits: { minSats: number; maxSats: number }) {
+  static async open(filename: string, seed: Uint8Array, mintUrl: string, limits: WalletLimits) {
     const database = new Database(filename, { create: true });
     database.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     let manager: Manager | undefined;
@@ -41,7 +35,7 @@ export class CocoWallet implements DonationWallet {
       const capability = await manager.mint.checkPaymentMethodCapability({ mintUrl, operation: "mint", method: "bolt11", unit: "sat" });
       if (!capability.supported || (capability.minAmount && capability.minAmount.toNumber() > limits.minSats)
         || (capability.maxAmount && capability.maxAmount.toNumber() < limits.maxSats)) throw new Error("Configured donation limits are incompatible with mint BOLT11/sat capabilities");
-      return new CocoWallet(manager, database, mintUrl);
+      return new CocoWallet(manager, database, mintUrl, limits.maxPending);
     } catch (error) {
       await manager?.dispose();
       database.close();
@@ -49,59 +43,43 @@ export class CocoWallet implements DonationWallet {
     }
   }
 
-  private quote(value: MintQuote): WalletQuote {
-    if (value.method !== "bolt11" || value.unit !== "sat" || value.mintUrl !== this.mintUrl) throw new Error("Unexpected mint quote");
-    return { id: value.quoteId, amount: value.amount.toNumber(), invoice: value.request,
-      expiresAt: value.expiry && value.expiry > 0 ? value.expiry * 1000 : null,
-      paid: !value.amountPaid.isZero() || !value.amountIssued.isZero() };
+  private operation(op: MintOperation, quote: MintQuote): WalletOperation {
+    if (op.state === "init" || op.method !== "bolt11" || op.unit !== "sat" || op.mintUrl !== this.mintUrl
+      || quote.method !== "bolt11" || quote.unit !== "sat" || quote.mintUrl !== this.mintUrl
+      || op.quoteId !== quote.quoteId || !op.amount.equals(quote.amount)) throw new Error("Unexpected mint operation");
+    return { id: op.id, amount: op.amount.toNumber(), invoice: op.request,
+      expiresAt: op.expiry && op.expiry > 0 ? op.expiry * 1000 : null,
+      updatedAt: op.updatedAt, state: op.state, error: op.error,
+      paid: !quote.amountPaid.isZero() || !quote.amountIssued.isZero() };
   }
-  private operation(value: MintOperation): WalletOperation {
-    if (value.method !== "bolt11" || value.unit !== "sat" || value.mintUrl !== this.mintUrl) throw new Error("Unexpected mint operation");
-    return { id: value.id, quoteId: value.quoteId, amount: value.amount.toNumber(), state: value.state, error: value.error };
-  }
-  createQuote(amount: number): Promise<WalletQuote> {
-    // Coco v2 allocates NUT-20 keys with a read/write sequence. Serialize allocation.
-    const result = this.quoteQueue.then(async () => this.quote(await this.manager.quotes.mint.create({
-      mintUrl: this.mintUrl, method: "bolt11", unit: "sat", amount, locked: true,
-    })));
-    this.quoteQueue = result.catch(() => {});
+
+  createInvoice(amount: number): Promise<WalletOperation> {
+    // Coco v2 allocates NUT-20 keys with a read/write sequence. Serialize creation,
+    // including admission, so abandoned quotes and simultaneous requests count too.
+    const result = this.creationQueue.then(async () => {
+      const pending = await this.manager.quotes.mint.listPending({ method: "bolt11" });
+      if (pending.filter((quote) => quote.mintUrl === this.mintUrl).length >= this.maxPending) {
+        throw new ApiError(503, "capacity", "Invoice creation is temporarily unavailable. Please try again later.");
+      }
+      const quote = await this.manager.quotes.mint.create({
+        mintUrl: this.mintUrl, method: "bolt11", unit: "sat", amount, locked: true,
+      });
+      const op = await this.manager.ops.mint.prepare({
+        quote: { mintUrl: this.mintUrl, quoteId: quote.quoteId, method: "bolt11" }, amount,
+      });
+      return this.operation(op, quote);
+    });
+    this.creationQueue = result.catch(() => {});
     return result;
   }
-  async getQuote(id: string) {
-    const quote = await this.manager.quotes.mint.get({ mintUrl: this.mintUrl, quoteId: id });
-    return quote ? this.quote(quote) : null;
-  }
-  async listByQuote(id: string) {
-    return (await this.manager.ops.mint.listByQuote({ mintUrl: this.mintUrl, quoteId: id })).map((op) => this.operation(op));
-  }
-  async prepare(quoteId: string, amount: number) {
-    let existing = await this.listByQuote(quoteId);
-    if (existing.some((op) => op.state === "init")) {
-      await this.manager.ops.mint.recovery.run();
-      existing = await this.listByQuote(quoteId);
-    }
-    if (existing.length > 1) throw new Error("Multiple operations for a fixed BOLT11 quote");
-    if (existing[0]) return existing[0];
-    try {
-      return this.operation(await this.manager.ops.mint.prepare({
-        quote: { mintUrl: this.mintUrl, quoteId, method: "bolt11" }, amount,
-      }));
-    } catch (error) {
-      // An automatic claim may have prepared the quote while we awaited prepare.
-      const recovered = await this.listByQuote(quoteId);
-      if (recovered.length === 1 && recovered[0].state !== "init") return recovered[0];
-      throw error;
-    }
-  }
+
   async getOperation(id: string) {
     const op = await this.manager.ops.mint.get(id);
-    return op ? this.operation(op) : null;
+    if (!op) return null;
+    const quote = await this.manager.quotes.mint.get({ mintUrl: op.mintUrl, quoteId: op.quoteId });
+    if (!quote) throw new Error("Mint operation has no stored quote");
+    return this.operation(op, quote);
   }
-  async refresh(id: string) { await this.manager.ops.mint.refresh(id); }
-  onChange(listener: () => void) {
-    const off = [this.manager.on("mint-quote:updated", listener), this.manager.on("mint-op:pending", listener),
-      this.manager.on("mint-op:executing", listener), this.manager.on("mint-op:finalized", listener), this.manager.on("mint-op:failed", listener)];
-    return () => off.forEach((unsubscribe) => unsubscribe());
-  }
-  async close() { await this.quoteQueue; await this.manager.dispose(); this.database.close(); }
+
+  async close() { await this.creationQueue; await this.manager.dispose(); this.database.close(); }
 }

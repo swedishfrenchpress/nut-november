@@ -46,5 +46,6 @@ export function useDonationPayment(initial: DonationPayment | null) {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [id]);
-  return { payment, error: error?.id === id ? error?.message ?? null : null };
+  return { payment, checking: Boolean(id && observed?.id !== id),
+    error: error?.id === id ? error?.message ?? null : null };
 }

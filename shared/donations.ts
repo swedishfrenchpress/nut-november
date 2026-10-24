@@ -13,10 +13,9 @@ export function getDonationMessagePreview(sats: number, content: string): string
   return Array.from(content.trim()).slice(0, DONATION_MESSAGE_DISPLAY_LIMIT).join("");
 }
 
-export type DonationStatus = "creating" | "pending" | "paid" | "confirmed" | "review" | "failed";
+export type DonationStatus = "pending" | "paid" | "confirmed" | "review" | "failed";
 
 export interface DonationRequest {
-  requestId: string;
   amountSats: number;
   message: string;
 }
@@ -25,7 +24,7 @@ export interface DonationRequest {
 export interface DonationPayment {
   id: string;
   amountSats: number;
-  invoice: string | null;
+  invoice: string;
   expiresAt: number | null;
   status: DonationStatus;
   paymentReceived: boolean;
@@ -50,8 +49,8 @@ export function isDonationPayment(value: unknown): value is DonationPayment {
   const v = value as DonationPayment;
   return typeof v.id === "string" && /^[0-9a-f-]{36}$/.test(v.id)
     && Number.isSafeInteger(v.amountSats) && v.amountSats > 0
-    && (v.invoice === null || typeof v.invoice === "string")
+    && typeof v.invoice === "string" && v.invoice.length > 0
     && (v.expiresAt === null || Number.isSafeInteger(v.expiresAt))
-    && ["creating", "pending", "paid", "confirmed", "review", "failed"].includes(v.status)
+    && ["pending", "paid", "confirmed", "review", "failed"].includes(v.status)
     && typeof v.paymentReceived === "boolean";
 }
