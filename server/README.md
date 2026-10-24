@@ -36,6 +36,8 @@ The donations table has five columns: private `id`, `public_id`, `operation_id`,
 
 Coco's default watchers/processors observe the mint and collect paid quotes; its startup recovery resumes persisted operations. There is no application payment projection, event-replay requirement, reconciliation worker or retry queue. Paid operations that remain stalled or finalize with an error require operator investigation through Coco. Browser polling never calls the mint.
 
+`src/index.ts` opens Coco's database, awaits `initializeCoco()`, configures the mint and passes the manager directly to the donation service. The donation module contains the creation/capacity checks and public response mapping. Shutdown drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
+
 Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. New requests are limited to 10 per client IP and 60 globally per fixed minute. On Fly, the client IP comes from Fly's proxy header; elsewhere it is the socket address. Every submission consumes a request slot, including failures.
 
 `MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at the configured mint, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
@@ -75,7 +77,7 @@ The manual [API workflow](../.github/workflows/api-deploy.yml) uses the GitHub e
 
 Before accepting normal donations, make one controlled payment and verify that it progresses to confirmed, appears exactly once, survives restart, and increases the frontend pool by that amount over 400,000 sats. Repeat with a signed identity, and rehearse a restore. Live payment/issuance and WebSocket-fallback behavior still need this operational rehearsal; the implementation check created and recovered an unpaid Minibits invoice without sending funds.
 
-Implementation verification on 2026-10-24 passed 17 backend tests, seven frontend store tests, type checks, lint, and the Next.js production build. Browser checks covered anonymous/signed requests, fresh invoices after lost responses, reload recovery, paid/confirmed states, totals, expiry, signature rejection, and an outage after payment. The complete API also passed live Minibits startup, readiness, graceful shutdown and restart checks with temporary empty databases. The container image was not built locally because Docker was unavailable; production provisioning and a funded payment test have not been performed.
+Implementation verification on 2026-10-24 passed 18 backend tests, seven frontend store tests, type checks, lint, and the Next.js production build. Browser checks covered anonymous/signed requests, fresh invoices after lost responses, reload recovery, paid/confirmed states, totals, expiry, signature rejection, and an outage after payment. The complete API also passed live Minibits startup, readiness, graceful shutdown and restart checks with temporary empty databases. The container image was not built locally because Docker was unavailable; production provisioning and a funded payment test have not been performed.
 
 ## Backup, restore and operations
 

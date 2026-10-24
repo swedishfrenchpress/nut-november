@@ -51,6 +51,8 @@ Read operations with `manager.ops.mint.get(id)` and quotes with `manager.quotes.
 
 ## Watchers, events and failures
 
+The entry point initializes Coco directly and passes its manager to the donation service. Invoice creation, capacity checks and response mapping are app-specific functions in the donation module; there is no wallet wrapper or intermediate operation model. The entry point also owns disposal and database shutdown after in-flight creation completes.
+
 Coco's watchers observe payment and its processors issue/recover ecash automatically. Hybrid transport uses WebSockets with polling fallback. The API needs no event listeners because status and totals are derived from current persisted Coco state on each request. Events that occur before metadata insertion or while the app is offline cannot leave a separate app payment projection stale. [Watcher](https://github.com/cashubtc/coco/blob/v2.0.0/packages/core/services/watchers/MintOperationWatcherService.ts), [transport](https://github.com/cashubtc/coco/blob/v2.0.0/packages/core/infra/HybridTransport.ts).
 
 A crash before metadata insertion may leave an unused Coco quote/operation. A lost response after insertion may leave an unused donation record. The browser has not obtained that response's invoice, and the next submission creates a new one. These are accepted outcomes; records are not reconstructed into application jobs. Once an invoice has been received, its private reference remains usable across page/server restarts.

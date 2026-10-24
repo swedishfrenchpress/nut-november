@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { Manager, MemoryRepositories, parseUnitAmount, toAmount, type MintOperation, type MintQuote, type PendingMintOperation } from "@cashu/coco-core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,54 +8,73 @@ import { DonationStore } from "../src/store.ts";
 import { DonationService } from "../src/donations.ts";
 import { createHandler } from "../src/http.ts";
 import { sha256 } from "../src/identity.ts";
-import type { DonationWallet, WalletOperation } from "../src/wallet.ts";
 import type { DonationPayment, DonationRequest } from "../../shared/donations.ts";
 
 const config = { mintUrl: "https://mint.example", origins: ["https://nutnovember.org"],
-  publicUrl: "https://api.nutnovember.org", minSats: 1, maxSats: 1_000_000 };
+  publicUrl: "https://api.nutnovember.org", minSats: 1, maxSats: 1_000_000, maxPending: 1000 };
 const key = new Uint8Array(32).fill(1);
-class FakeWallet implements DonationWallet {
-  operations = new Map<string, WalletOperation>();
+class CocoFixture {
+  manager = new Manager(new MemoryRepositories(), async () => new Uint8Array(64).fill(1));
+  operations = new Map<string, Exclude<MintOperation, { state: 'init' }>>();
+  quotes = new Map<string, MintQuote<'bolt11'>>();
   creations = 0;
   reads = 0;
   failCreate = false;
   afterPrepare?: () => Promise<void>;
-  async createInvoice(amount: number) {
-    this.creations++;
-    if (this.failCreate) throw new Error('Mint unavailable');
-    const id = crypto.randomUUID();
-    const operation: WalletOperation = { id, amount, invoice: `lnbc-test-${id}`, expiresAt: Date.now() + 60_000,
-      updatedAt: Date.now(), state: 'pending', paid: false };
-    this.operations.set(id, operation);
-    await this.afterPrepare?.();
-    return { ...operation };
+  constructor() {
+    spyOn(this.manager.quotes.mint, 'create').mockImplementation(async (input) => {
+      this.creations++;
+      if (this.failCreate) throw new Error('Mint unavailable');
+      if (input.method !== 'bolt11') throw new Error('Expected BOLT11');
+      const { amount, unit } = parseUnitAmount(input.amount, { explicitUnit: input.unit });
+      const quoteId = crypto.randomUUID();
+      const quote: MintQuote<'bolt11'> = { quoteId, quote: quoteId, mintUrl: input.mintUrl, method: 'bolt11', unit,
+        amount, request: `lnbc-test-${quoteId}`, expiry: Math.floor(Date.now() / 1000) + 60,
+        createdAt: Date.now(), updatedAt: Date.now(), state: 'UNPAID', reusable: false,
+        amountPaid: toAmount(0), amountIssued: toAmount(0), remoteUpdatedAt: null, quoteData: { amount } };
+      this.quotes.set(quoteId, quote);
+      return quote;
+    });
+    spyOn(this.manager.quotes.mint, 'listPending').mockImplementation(async () => [...this.quotes.values()].filter((quote) => quote.amountIssued.isZero()));
+    spyOn(this.manager.quotes.mint, 'get').mockImplementation(async ({ quoteId }) => this.quotes.get(quoteId) ?? null);
+    spyOn(this.manager.ops.mint, 'prepare').mockImplementation(async ({ quote: ref }) => {
+      const quote = this.quotes.get(ref.quoteId)!;
+      const operation: PendingMintOperation = { id: crypto.randomUUID(), amount: quote.amount, request: quote.request,
+        expiry: quote.expiry, createdAt: Date.now(), updatedAt: Date.now(), state: 'pending', mintUrl: quote.mintUrl,
+        quoteId: quote.quoteId, method: 'bolt11', methodData: {}, unit: 'sat', outputData: { keep: [], send: [] } };
+      this.operations.set(operation.id, operation);
+      await this.afterPrepare?.();
+      return { ...operation };
+    });
+    spyOn(this.manager.ops.mint, 'get').mockImplementation(async (id) => {
+      this.reads++;
+      const op = this.operations.get(id);
+      return op ? { ...op } : null;
+    });
   }
-  async getOperation(id: string) {
-    this.reads++;
-    const op = this.operations.get(id);
-    return op ? { ...op } : null;
-  }
-  async close() {}
   settle(id: string, error?: string) {
-    Object.assign(this.operations.get(id)!, { state: 'finalized', paid: true, updatedAt: Date.now(), error });
+    const op = this.operations.get(id)!;
+    Object.assign(op, { state: 'finalized', updatedAt: Date.now(), error });
+    Object.assign(this.quotes.get(op.quoteId)!, { amountPaid: op.amount, amountIssued: op.amount, state: 'ISSUED' });
   }
 }
 
-const cleanups: Array<() => void> = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
-function harness() {
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+function harness(maxPending = config.maxPending) {
   const dir = mkdtempSync(join(tmpdir(), 'nut-donation-test-'));
   const filename = join(dir, 'app.sqlite');
-  const wallet = new FakeWallet();
+  const coco = new CocoFixture();
+  const limits = { ...config, maxPending };
   let store = new DonationStore(filename);
-  let service = new DonationService(store, wallet);
+  let service = new DonationService(store, coco.manager, limits);
   let handler = createHandler(service, config);
-  cleanups.push(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  cleanups.push(async () => { await service.drain(); await coco.manager.dispose(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return {
-    wallet, get store() { return store; }, get service() { return service; },
+    coco, get store() { return store; }, get service() { return service; },
     restart() {
       store.close(); store = new DonationStore(filename);
-      service = new DonationService(store, wallet);
+      service = new DonationService(store, coco.manager, limits);
       handler = createHandler(service, config);
     },
     request: (request: Request, client = '127.0.0.1') => handler(request, client),
@@ -80,10 +100,10 @@ test('only donor metadata and the operation association are saved; Coco supplies
   const payment = await response.json() as DonationPayment;
   const row = h.store.get(payment.id)!;
   expect(row).toEqual({ id: payment.id, publicId: expect.any(String), operationId: expect.any(String), message: '🌰 Go nuts', donorPubkey: null });
-  expect(payment.invoice).toBe(h.wallet.operations.get(row.operationId)!.invoice);
+  expect(payment.invoice).toBe(h.coco.operations.get(row.operationId)!.request);
   expect(payment.status).toBe('pending');
   expect(await h.service.feed()).toEqual({ donations: [], donationCount: 0, donationTotal: 0 });
-  h.wallet.settle(row.operationId);
+  h.coco.settle(row.operationId);
   expect((await h.service.get(row.id)).status).toBe('confirmed');
   const feed = await h.service.feed();
   expect(feed.donationTotal).toBe(1001);
@@ -103,58 +123,78 @@ test('each submission creates a new invoice, including concurrent identical subm
   expect(responses.every((response) => response.status === 201)).toBe(true);
   expect(new Set(payments.map((payment) => payment.id)).size).toBe(5);
   expect(new Set(payments.map((payment) => payment.invoice)).size).toBe(5);
-  expect(h.wallet.creations).toBe(5);
+  expect(h.coco.creations).toBe(5);
   expect(h.store.list()).toHaveLength(5);
 });
 
-test('creation awaits Coco persistence before saving metadata or returning an invoice', async () => {
+test('creation is serialized and shutdown waits for Coco persistence and metadata commits', async () => {
   const h = harness();
   let prepared!: () => void;
   const preparedPromise = new Promise<void>((resolve) => { prepared = resolve; });
   let release!: () => void;
-  h.wallet.afterPrepare = () => new Promise<void>((resolve) => { release = resolve; prepared(); });
+  h.coco.afterPrepare = () => new Promise<void>((resolve) => { release = resolve; prepared(); });
   let responded = false;
   const pending = h.post(input()).then((response) => { responded = true; return response; });
   await preparedPromise;
-  expect(h.wallet.operations.size).toBe(1);
+  expect(h.coco.operations.size).toBe(1);
   expect(h.store.list()).toHaveLength(0);
   expect(responded).toBe(false);
+  const second = h.service.create(input(), null, '127.0.0.1');
+  let drained = false;
+  const draining = h.service.drain().then(() => { drained = true; });
+  await Bun.sleep(1);
+  expect(h.coco.creations).toBe(1);
+  expect(drained).toBe(false);
+  h.coco.afterPrepare = undefined;
   release();
   const response = await pending;
+  await second;
+  await draining;
   expect(response.status).toBe(201);
-  expect(h.store.list()).toHaveLength(1);
+  expect(h.store.list()).toHaveLength(2);
+  expect(drained).toBe(true);
+});
+
+test('concurrent requests cannot exceed Coco pending-quote capacity', async () => {
+  const h = harness(1);
+  const responses = await Promise.all([h.post(input()), h.post(input())]);
+  expect(responses.map((response) => response.status)).toEqual([201, 503]);
+  expect(await responses[1].json()).toMatchObject({ error: { code: 'capacity' } });
+  expect(h.coco.creations).toBe(1);
 });
 
 test('creation failure returns an error without background recovery; the next submission starts fresh', async () => {
   const h = harness();
-  h.wallet.failCreate = true;
+  h.coco.failCreate = true;
   const response = await h.post(input());
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: { code: 'internal', message: "We couldn't create an invoice. Please request a new one." } });
   expect(h.store.list()).toHaveLength(0);
   h.restart();
-  expect(h.wallet.creations).toBe(1);
-  h.wallet.failCreate = false;
+  expect(h.coco.creations).toBe(1);
+  h.coco.failCreate = false;
   expect((await h.post(input())).status).toBe(201);
-  expect(h.wallet.creations).toBe(2);
+  expect(h.coco.creations).toBe(2);
   expect(h.store.list()).toHaveLength(1);
 });
 
 test('failed metadata persistence leaves an unexposed Coco operation; the next submission creates another', async () => {
-  const h = harness();
+  const h = harness(2);
   h.store.database.exec("CREATE TRIGGER reject_donation BEFORE INSERT ON donations BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;");
   const failed = await h.post(input());
   expect(failed.status).toBe(500);
   expect(await failed.json()).not.toHaveProperty('invoice');
-  const orphan = [...h.wallet.operations.values()][0];
+  const orphan = [...h.coco.operations.values()][0];
   expect(orphan).toBeDefined();
   expect(h.store.list()).toHaveLength(0);
   h.store.database.exec('DROP TRIGGER reject_donation');
   const payment = await (await h.post(input())).json() as DonationPayment;
-  expect(payment.invoice).not.toBe(orphan.invoice);
-  expect(h.wallet.operations.size).toBe(2);
+  expect(payment.invoice).not.toBe(orphan.request);
+  expect(h.coco.operations.size).toBe(2);
   expect(h.store.list()).toHaveLength(1);
-  h.wallet.settle(orphan.id);
+  expect((await h.post(input())).status).toBe(503);
+  expect(h.coco.creations).toBe(2);
+  h.coco.settle(orphan.id);
   expect((await h.service.feed()).donationTotal).toBe(0);
 });
 
@@ -176,7 +216,7 @@ test('verified Nostr identity is stored as a pubkey; repeated valid submissions 
   const second = await (await h.post(request, authorization)).json() as DonationPayment;
   expect(first.id).not.toBe(second.id);
   expect(h.store.get(first.id)!.donorPubkey).toBe(getPublicKey(key));
-  h.wallet.settle(h.store.get(first.id)!.operationId);
+  h.coco.settle(h.store.get(first.id)!.operationId);
   expect((await h.service.feed()).donations[0].donorPubkey).toBe(getPublicKey(key));
 });
 
@@ -193,29 +233,29 @@ test('invalid, expired, future, wrong-method, wrong-URL and tampered-body signat
   const decoded = JSON.parse(Buffer.from(auth(request).slice(6), 'base64').toString());
   decoded.sig = '0'.repeat(128);
   expect((await h.post(request, `Nostr ${Buffer.from(JSON.stringify(decoded)).toString('base64')}`)).status).toBe(401);
-  expect(h.wallet.creations).toBe(0);
+  expect(h.coco.creations).toBe(0);
 });
 
 test('Coco state changes are visible after restart without event replay or app state updates', async () => {
   const h = harness();
   const payment = await (await h.post(input())).json() as DonationPayment;
   const row = h.store.get(payment.id)!;
-  h.wallet.settle(row.operationId);
+  h.coco.settle(row.operationId);
   h.restart();
   expect((await h.service.get(row.id)).status).toBe('confirmed');
   expect((await h.service.feed()).donationTotal).toBe(1001);
   expect(h.store.get(row.id)).toEqual(row);
-  expect(h.wallet.creations).toBe(1);
+  expect(h.coco.creations).toBe(1);
 });
 
 test('paid-but-pending and error-finalized operations never publish uncollected amounts', async () => {
   const h = harness();
   const created = await (await h.post(input())).json() as DonationPayment;
-  const op = h.wallet.operations.get(h.store.get(created.id)!.operationId)!;
-  op.paid = true;
+  const op = h.coco.operations.get(h.store.get(created.id)!.operationId)!;
+  h.coco.quotes.get(op.quoteId)!.amountPaid = op.amount;
   expect(await h.service.get(created.id)).toMatchObject({ status: 'paid', paymentReceived: true });
   expect((await h.service.feed()).donationTotal).toBe(0);
-  h.wallet.settle(op.id, 'No proofs could be recovered');
+  h.coco.settle(op.id, 'No proofs could be recovered');
   expect(await h.service.get(created.id)).toMatchObject({ status: 'review', paymentReceived: true });
   expect((await h.service.feed()).donationTotal).toBe(0);
 });
@@ -223,10 +263,10 @@ test('paid-but-pending and error-finalized operations never publish uncollected 
 test('expiry is supplied by Coco and a later collected payment still appears', async () => {
   const h = harness();
   const created = await (await h.post(input())).json() as DonationPayment;
-  const op = h.wallet.operations.get(h.store.get(created.id)!.operationId)!;
-  op.expiresAt = Date.now() - 1000;
-  expect(await h.service.get(created.id)).toMatchObject({ status: 'pending', expiresAt: op.expiresAt });
-  h.wallet.settle(op.id);
+  const op = h.coco.operations.get(h.store.get(created.id)!.operationId)!;
+  op.expiry = Math.floor(Date.now() / 1000) - 1;
+  expect(await h.service.get(created.id)).toMatchObject({ status: 'pending', expiresAt: op.expiry * 1000 });
+  h.coco.settle(op.id);
   expect((await h.service.feed()).donationTotal).toBe(1001);
 });
 
@@ -237,15 +277,15 @@ test('read endpoints only look up stored operations and do not create invoices',
     expect((await h.request(new Request(`${config.publicUrl}/donate/${created.id}`))).status).toBe(200);
     expect((await h.request(new Request(`${config.publicUrl}/donations`))).status).toBe(200);
   }
-  expect(h.wallet.creations).toBe(1);
-  expect(h.wallet.reads).toBe(6);
+  expect(h.coco.creations).toBe(1);
+  expect(h.coco.reads).toBe(6);
   expect((await h.request(new Request(`${config.publicUrl}/donate/${crypto.randomUUID()}`))).status).toBe(404);
 });
 
 test('missing Coco records fail reads instead of fabricating pending state or reducing totals', async () => {
   const h = harness();
   const created = await (await h.post(input())).json() as DonationPayment;
-  h.wallet.operations.clear();
+  h.coco.operations.clear();
   expect((await h.request(new Request(`${config.publicUrl}/donate/${created.id}`))).status).toBe(503);
   expect((await h.request(new Request(`${config.publicUrl}/donations`))).status).toBe(503);
 });
@@ -273,7 +313,7 @@ test('invoice request limits persist across restart and every new submission con
   expect((await h.post(input())).status).toBe(429);
   h.restart();
   expect((await h.post(input())).status).toBe(429);
-  expect(h.wallet.creations).toBe(10);
+  expect(h.coco.creations).toBe(10);
   expect((await h.post(input(), undefined, 'another-ip')).status).toBe(201);
 });
 
@@ -281,7 +321,7 @@ test('global rate limiting bounds requests across clients', async () => {
   const h = harness();
   for (let i = 0; i < 60; i++) expect((await h.post(input(), undefined, `client-${i}`)).status).toBe(201);
   expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
-  expect(h.wallet.creations).toBe(60);
+  expect(h.coco.creations).toBe(60);
 });
 
 test('wallet identity guards against the wrong seed and missing database pair', async () => {
