@@ -29,7 +29,7 @@ export default function Sponsors() {
               <p className="mt-3 text-lg text-cream"><LoadingText>From OpenCash and 0 donations so far.</LoadingText></p>
             </>
           }>
-            {({ total, donationCount, isLoading }) => (
+            {({ total, donationCount, isLoading, error }) => (
               <>
                 <p
                   className={totalClassName}
@@ -39,7 +39,8 @@ export default function Sponsors() {
                 </p>
                 <p className="mt-3 text-lg text-cream">
                   {isLoading
-                    ? "Counting zaps…"
+                    ? "Counting donations…"
+                    : error ? "Showing the last known pool. Donation updates are temporarily unavailable."
                     : donationCount === 0
                       ? "From OpenCash. No donations yet, be the first."
                       : `From OpenCash and ${donationCount} ${donationCount === 1 ? "donation" : "donations"} so far.`}

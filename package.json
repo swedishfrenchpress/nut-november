@@ -6,8 +6,11 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "lint": "eslint"
+    "test": "bun test ./tests/*.test.mjs",
+    "lint": "eslint",
+    "api:dev": "bun run --cwd server dev",
+    "api:test": "bun run --cwd server test",
+    "api:typecheck": "bun run --cwd server typecheck"
   },
   "dependencies": {
     "next": "^16.4.1",

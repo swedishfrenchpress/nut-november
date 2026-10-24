@@ -2,6 +2,11 @@
 
 # dependencies
 /node_modules
+**/node_modules/
+server/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 /.pnp
 .pnp.*
 .yarn/*
@@ -32,6 +37,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+!server/.env.example
 
 # vercel
 .vercel

@@ -1,11 +1,8 @@
 "use client";
 
-import { nutnovemberPubkey } from "@/pubkey";
-import { ZAP_RELAYS } from "@/zap-relays";
-import { finalizeEvent, generateSecretKey, nip19, nip57 } from "nostr-tools";
 import type { WindowNostr } from "nostr-tools/nip07";
 import Link from "next/link";
-import { FormEvent, useState, useSyncExternalStore } from "react";
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import PacketPage, {
   PoolAmount,
   field,
@@ -22,9 +19,19 @@ import {
 } from "../lib/donationMessages";
 import SuccessMessage from "./components/SuccessMessage";
 import InvoiceDisplay from "./components/InvoiceDisplay";
-import { useReceiptSubscription } from "./hooks/useReceiptSubscription";
+import { useDonationPayment } from "./hooks/useDonationPayment";
+import { createDonation, DONATION_SESSION_KEY, signDonationRequest } from "../lib/donationApi";
+import { DONATION_MAX_SATS, isDonationPayment, type DonationPayment, type DonationRequest } from "../../../shared/donations";
 
 const PRESETS = [21, 1000, 21000];
+type Attempt = { request: DonationRequest; identity: "anonymous" | "profile"; payment?: DonationPayment };
+
+function remember(attempt: Attempt | null) {
+  try {
+    if (attempt) sessionStorage.setItem(DONATION_SESSION_KEY, JSON.stringify(attempt));
+    else sessionStorage.removeItem(DONATION_SESSION_KEY);
+  } catch { /* Payment remains usable if storage is unavailable. */ }
+}
 
 function hasNostrSigner() {
   return typeof (window as Window & { nostr?: WindowNostr }).nostr?.signEvent === "function";
@@ -47,36 +54,72 @@ function Page() {
   const [error, setError] = useState<string | null>(null);
   const [preferredIdentity, setIdentity] = useState<"anonymous" | "profile">("anonymous");
   const hasSigner = useSyncExternalStore(subscribeToSigner, hasNostrSigner, () => false);
-  const identity = hasSigner ? preferredIdentity : "anonymous";
+  const identity = preferredIdentity;
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [submission, setSubmission] = useState<"signing" | "invoice" | null>(null);
   const isSubmitting = submission !== null;
-  const [invoice, setInvoice] = useState<string | null>(null);
-  const [receiptId, setReceiptId] = useState<string | null>(null);
-  const isPaid = useReceiptSubscription(receiptId);
+  const [initialPayment, setInitialPayment] = useState<DonationPayment | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const attempt = useRef<Attempt | null>(null);
+  const submitting = useRef(false);
+  const { payment, error: paymentError } = useDonationPayment(initialPayment);
+
+  useEffect(() => {
+    let active = true;
+    // Restore after hydration; no private payment state is included in server HTML.
+    void Promise.resolve().then(() => {
+      if (!active) return;
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(DONATION_SESSION_KEY) ?? "null") as Attempt | null;
+        if (saved && ["anonymous", "profile"].includes(saved.identity) && typeof saved.request?.requestId === "string"
+          && Number.isSafeInteger(saved.request.amountSats) && saved.request.amountSats > 0
+          && saved.request.amountSats <= DONATION_MAX_SATS && typeof saved.request.message === "string") {
+          attempt.current = saved;
+          setAmount(String(saved.request.amountSats));
+          setMessage(saved.request.message);
+          setIdentity(saved.identity);
+          if (isDonationPayment(saved.payment)) {
+            // Recheck with the API before offering payment or showing success.
+            // Preserve any previously observed payment while that check is offline.
+            setInitialPayment({ ...saved.payment, status: "creating" });
+          }
+        }
+      } catch { /* Ignore an unreadable session cache. */ }
+      setRestoring(false);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (payment && attempt.current?.payment?.id === payment.id) {
+      attempt.current.payment = payment;
+      remember(attempt.current);
+    }
+  }, [payment]);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (isSubmitting) return;
+    if (submitting.current || restoring) return;
 
     setSubmissionError(null);
     const sats = Number(amount);
-    if (!Number.isInteger(sats) || sats < 1) {
-      setError("Enter a whole number of sats, 1 or more.");
+    if (!Number.isSafeInteger(sats) || sats < 1 || sats > DONATION_MAX_SATS) {
+      setError(`Enter a whole number of sats from 1 to ${DONATION_MAX_SATS.toLocaleString("en-US")}.`);
       return;
     }
 
     setError(null);
+    submitting.current = true;
     setSubmission(identity === "profile" ? "signing" : "invoice");
 
     try {
-      const zap = nip57.makeZapRequest({
-        pubkey: nutnovemberPubkey,
-        amount: sats * 1000,
-        relays: ZAP_RELAYS,
-        comment: canIncludeDonationMessage(sats) ? message.trim() : "",
-      });
-      let signed;
+      const content = canIncludeDonationMessage(sats) ? message.trim() : "";
+      if (!attempt.current || attempt.current.request.amountSats !== sats
+        || attempt.current.request.message !== content || attempt.current.identity !== identity) {
+        attempt.current = { request: { requestId: crypto.randomUUID(), amountSats: sats, message: content }, identity };
+      }
+      remember(attempt.current);
+      let authorization: string | undefined;
       if (identity === "profile") {
         const signer = (window as Window & { nostr?: WindowNostr }).nostr;
         if (!signer || typeof signer.signEvent !== "function") {
@@ -84,50 +127,42 @@ function Page() {
           return;
         }
         try {
-          signed = await signer.signEvent(zap);
+          authorization = await signDonationRequest(JSON.stringify(attempt.current.request), signer);
         } catch {
           setSubmissionError("Your extension didn't sign the donation request. Try again, or choose Anonymous.");
           return;
         }
-      } else {
-        signed = finalizeEvent(zap, generateSecretKey());
       }
 
       setSubmission("invoice");
-      const npub = nip19.npubEncode(nutnovemberPubkey);
-      const res = await fetch(
-        `https://npubx.cash/.well-known/lnurlp/${npub}?amount=${sats * 1000}&nostr=${encodeURIComponent(
-          JSON.stringify(signed)
-        )}`
-      );
-      const data = (await res.json()) as { pr?: string; reason?: string };
-      if (!res.ok || !data.pr) throw new Error(data.reason ?? `HTTP ${res.status}`);
-      setReceiptId(signed.id);
-      setInvoice(data.pr);
+      const next = await createDonation(attempt.current.request, authorization);
+      attempt.current.payment = next;
+      remember(attempt.current);
+      setInitialPayment(next);
     } catch (err) {
-      console.error("Error fetching invoice:", err);
-      setSubmissionError("We couldn't create an invoice. Check your connection and try again.");
+      setSubmissionError(err instanceof Error ? err.message : "We couldn't create an invoice. Please try again.");
     } finally {
       setSubmission(null);
+      submitting.current = false;
     }
   }
 
   function handleBack() {
-    setInvoice(null);
-    setReceiptId(null);
+    setInitialPayment(null);
+    attempt.current = null;
+    remember(null);
   }
 
   function handleReset() {
-    setInvoice(null);
-    setReceiptId(null);
+    handleBack();
     setAmount("");
     setMessage("");
   }
 
-  if (isPaid) {
+  if (payment?.status === "confirmed") {
     return (
       <PacketPage title="Thank you!">
-        <SuccessMessage amount={Number(amount)} onReset={handleReset} />
+        <SuccessMessage amount={payment.amountSats} onReset={handleReset} />
       </PacketPage>
     );
   }
@@ -140,8 +175,8 @@ function Page() {
       <DonationData>{({ total }) => <PoolAmount sats={total}>sats in the pool now</PoolAmount>}</DonationData>
 
       <div className="mx-auto mt-12 max-w-md">
-        {invoice ? (
-          <InvoiceDisplay invoice={invoice} amount={Number(amount)} onBack={handleBack} />
+        {restoring ? <p role="status" className={fieldHint}>Checking for an unfinished donation…</p> : payment ? (
+          <InvoiceDisplay payment={payment} error={paymentError} onBack={handleBack} />
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
             <fieldset disabled={isSubmitting}>
@@ -180,6 +215,7 @@ function Page() {
                   type="number"
                   inputMode="numeric"
                   min={1}
+                  max={DONATION_MAX_SATS}
                   step={1}
                   disabled={isSubmitting}
                   value={amount}
@@ -215,7 +251,7 @@ function Page() {
                 {([
                   ["anonymous", "Anonymous"],
                   ["profile", "My Nostr profile"],
-                ] as const).filter(([value]) => value === "anonymous" || hasSigner).map(([value, label]) => (
+                ] as const).filter(([value]) => value === "anonymous" || hasSigner || identity === "profile").map(([value, label]) => (
                   <label key={value} className="flex items-center gap-3 text-lg font-semibold text-bark-dark">
                     <input
                       type="radio"
@@ -256,7 +292,7 @@ function Page() {
               />
               <p id="message-hint" className={fieldHint}>
                 {canAddMessage
-                  ? "Your message will be public on Nostr, even if you donate anonymously."
+                  ? "Your message will be public on this site, even if you donate anonymously."
                   : `Donate more than ${DONATION_MESSAGE_THRESHOLD.toLocaleString("en-US")} sats to unlock a public message with your donation.`}
               </p>
               <p id="message-count" className={`${fieldHint} text-right tabular-nums`}>

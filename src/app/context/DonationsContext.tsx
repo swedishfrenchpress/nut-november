@@ -7,39 +7,55 @@ import {
   useSyncExternalStore,
   ReactNode,
 } from "react";
-import { SimplePool } from "nostr-tools";
 import dynamic from "next/dynamic";
-import { nutnovemberPubkey, ZAP_RECEIPT_PUBKEY } from "@/pubkey";
-import { ZAP_RELAYS } from "@/zap-relays";
 import { createDonationStore, type DonationSnapshot } from "../lib/donations";
+import { DONATION_API_URL } from "../lib/donationApi";
 
 export type { PrizeKey } from "../lib/donations";
 
-// Only zaps paid after this count toward Nut November 2026, so last year's
-// donations stay out of the pool.
-const DONATIONS_SINCE = Math.floor(Date.UTC(2026, 0, 1) / 1000);
-
 const donationStore = createDonationStore({
-  policy: {
-    recipient: nutnovemberPubkey,
-    receiptAuthor: ZAP_RECEIPT_PUBKEY,
-    since: DONATIONS_SINCE,
-  },
+  cacheKey: `nutnovember:api-donations:v2:${DONATION_API_URL}`,
   getStorage: () => window.localStorage,
   connect(handlers) {
-    const pool = new SimplePool();
-    const sub = pool.subscribeMany(
-      ZAP_RELAYS,
-      {
-        "#p": [nutnovemberPubkey],
-        kinds: [9735],
-        authors: [ZAP_RECEIPT_PUBKEY],
-        since: DONATIONS_SINCE,
-      },
-      handlers
-    );
+    let active = true;
+    let running = false;
+    let rerun = false;
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    async function update() {
+      if (!active || document.hidden) return;
+      if (running) { rerun = true; return; }
+      running = true;
+      clearTimeout(timer);
+      try {
+        const response = await fetch(`${DONATION_API_URL}/donations`, { cache: "no-store",
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
+        if (!response.ok) throw new Error("Donation feed unavailable");
+        const snapshot = await response.json();
+        if (active) { handlers.snapshot(snapshot); failures = 0; }
+      } catch {
+        if (active) { handlers.error(); failures++; }
+      } finally {
+        running = false;
+        if (active) {
+          timer = setTimeout(() => { void update(); }, rerun ? 0 : Math.min(120_000, 20_000 * 2 ** Math.min(failures, 3)));
+          rerun = false;
+        }
+      }
+    }
+    const refresh = () => { void update(); };
+    window.addEventListener("focus", refresh);
+    window.addEventListener("donations:refresh", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    refresh();
     return () => {
-      void Promise.resolve(sub.close()).finally(() => pool.destroy());
+      active = false;
+      controller.abort();
+      clearTimeout(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("donations:refresh", refresh);
+      document.removeEventListener("visibilitychange", refresh);
     };
   },
 });
@@ -74,7 +90,7 @@ function DonationFallback() {
 }
 
 // Every live donation display uses this boundary: first render from localStorage,
-// then update from the provider's shared relay sync. Keep static page content on
+// then update from the provider's shared API sync. Keep static page content on
 // the server and bundle this component eagerly, without an extra chunk fetch.
 const ClientDonationData = dynamic(() => Promise.resolve(DonationDataContent), {
   ssr: false,

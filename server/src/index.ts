@@ -1,0 +1,53 @@
+import { mkdirSync, statSync, existsSync, chmodSync } from "node:fs";
+import { join } from "node:path";
+import { readConfig } from "./config.ts";
+import { sha256 } from "./identity.ts";
+import { DonationStore } from "./store.ts";
+import { CocoWallet } from "./wallet.ts";
+import { DonationService } from "./donations.ts";
+import { createHandler } from "./http.ts";
+
+process.umask(0o077);
+const config = readConfig();
+mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+chmodSync(config.dataDir, 0o700);
+const walletPath = join(config.dataDir, "coco.sqlite");
+const walletAlreadyExists = existsSync(walletPath) && statSync(walletPath).size > 0;
+const store = new DonationStore(join(config.dataDir, "app.sqlite"));
+store.bindWallet(sha256(config.seed), config.mintUrl, walletAlreadyExists);
+const wallet = await CocoWallet.open(walletPath, config.seed, config.mintUrl, config);
+const service = new DonationService(store, wallet, config);
+let ready = false;
+const handler = createHandler(service, config, { ready: () => ready });
+const server = Bun.serve({
+  hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: 4096,
+  fetch(request, server) {
+    const peer = server.requestIP(request)?.address ?? "unknown";
+    const client = config.trustFlyProxy ? request.headers.get("fly-client-ip") ?? peer : peer;
+    return handler(request, client);
+  },
+});
+await service.start();
+ready = true;
+console.info(`Donation API listening on port ${config.port}`);
+
+let stopping = false;
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  ready = false;
+  const deadline = setTimeout(() => process.exit(1), 25_000);
+  try {
+    await server.stop();
+    await service.stop();
+    await wallet.close();
+    store.close();
+    clearTimeout(deadline);
+    process.exit(0);
+  } catch {
+    console.error("Donation API shutdown did not complete cleanly; restart recovery is required");
+    process.exit(1);
+  }
+}
+process.on("SIGTERM", () => { void shutdown(); });
+process.on("SIGINT", () => { void shutdown(); });
