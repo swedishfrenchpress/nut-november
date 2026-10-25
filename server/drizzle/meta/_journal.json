@@ -8,6 +8,13 @@
       "when": 1792859082567,
       "tag": "0000_donation_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792907215623,
+      "tag": "0001_drop_rate_limits",
+      "breakpoints": true
     }
   ]
 }

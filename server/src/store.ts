@@ -1,10 +1,9 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { eq, lt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
-import { donations, rateLimits, settings, type DonationRow } from "./schema.ts";
-import { ApiError } from "./errors.ts";
+import { donations, settings, type DonationRow } from "./schema.ts";
 
 export class DonationStore {
   readonly database: Database;
@@ -33,23 +32,6 @@ export class DonationStore {
   get(id: string) { return this.db.select().from(donations).where(eq(donations.id, id)).get(); }
   list() { return this.db.select().from(donations).all(); }
   insert(row: DonationRow) { this.db.insert(donations).values(row).run(); }
-
-  consumeRateLimit(client: string, now = Date.now()) {
-    this.db.transaction(() => {
-      const clientWindowMs = 10 * 60_000;
-      this.db.delete(rateLimits).where(lt(rateLimits.windowStart, Math.floor(now / clientWindowMs) * clientWindowMs)).run();
-      for (const [key, limit, windowMs] of [[`client:${client}`, 3, clientWindowMs], ["global", 50, 60_000]] as const) {
-        const windowStart = Math.floor(now / windowMs) * windowMs;
-        const old = this.db.select().from(rateLimits).where(eq(rateLimits.key, key)).get();
-        const count = old?.windowStart === windowStart ? old.count : 0;
-        if (count >= limit) throw new ApiError(429, "rate_limit", "Too many invoice requests. Please try again later.",
-          Math.ceil((windowStart + windowMs - now) / 1000));
-        this.db.insert(rateLimits).values({ key, windowStart, count: count + 1 }).onConflictDoUpdate({
-          target: rateLimits.key, set: { windowStart, count: count + 1 },
-        }).run();
-      }
-    });
-  }
 
   close() { this.database.close(); }
 }

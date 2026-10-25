@@ -50,8 +50,7 @@ export class DonationService {
   private creationQueue: Promise<unknown> = Promise.resolve();
   constructor(private store: DonationStore, private coco: Manager, private config: Pick<Config, "mintUrl" | "maxPending">) {}
 
-  async create(input: DonationRequest, donorPubkey: string | null, client: string): Promise<DonationPayment> {
-    this.store.consumeRateLimit(client);
+  async create(input: DonationRequest, donorPubkey: string | null): Promise<DonationPayment> {
     // Serialize admission and Coco's NUT-20 key allocation, including abandoned quotes.
     const result = this.creationQueue.then(async () => {
       const { op, quote } = await createInvoice(this.coco, this.config.mintUrl, this.config.maxPending, input.amountSats);

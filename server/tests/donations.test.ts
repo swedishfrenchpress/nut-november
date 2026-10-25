@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { Manager, MemoryRepositories, parseUnitAmount, toAmount, type MintOperation, type MintQuote, type PendingMintOperation } from "@cashu/coco-core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { finalizeEvent, getPublicKey } from "nostr-tools";
 import { DonationStore } from "../src/store.ts";
 import { DonationService } from "../src/donations.ts";
-import { createHandler } from "../src/http.ts";
+import { createApp } from "../src/http.ts";
 import { sha256 } from "../src/identity.ts";
 import type { DonationPayment, DonationRequest } from "../../shared/donations.ts";
 
@@ -68,20 +68,20 @@ function harness(maxPending = config.maxPending) {
   const limits = { ...config, maxPending };
   let store = new DonationStore(filename);
   let service = new DonationService(store, coco.manager, limits);
-  let handler = createHandler(service, config);
+  let app = createApp(service, config);
   cleanups.push(async () => { await service.drain(); await coco.manager.dispose(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return {
     coco, get store() { return store; }, get service() { return service; },
     restart() {
       store.close(); store = new DonationStore(filename);
       service = new DonationService(store, coco.manager, limits);
-      handler = createHandler(service, config);
+      app = createApp(service, config);
     },
-    request: (request: Request, client = '127.0.0.1') => handler(request, client),
-    post(input: unknown, authorization?: string, client = '127.0.0.1') {
-      return handler(new Request(`${config.publicUrl}/donate`, { method: 'POST', headers: {
+    request: (request: Request, client = '127.0.0.1') => app.request(request, undefined, { clientIp: client }),
+    async post(input: unknown, authorization?: string, client = '127.0.0.1') {
+      return app.request(new Request(`${config.publicUrl}/donate`, { method: 'POST', headers: {
         'Content-Type': 'application/json', ...(authorization ? { Authorization: authorization } : {}),
-      }, body: JSON.stringify(input) }), client);
+      }, body: JSON.stringify(input) }), undefined, { clientIp: client });
     },
   };
 }
@@ -139,7 +139,7 @@ test('creation is serialized and shutdown waits for Coco persistence and metadat
   expect(h.coco.operations.size).toBe(1);
   expect(h.store.list()).toHaveLength(0);
   expect(responded).toBe(false);
-  const second = h.service.create(input(), null, '127.0.0.1');
+  const second = h.service.create(input(), null);
   let drained = false;
   const draining = h.service.drain().then(() => { drained = true; });
   await Bun.sleep(1);
@@ -307,10 +307,10 @@ test('CORS, methods, amount limits, body limits and message policy are enforced'
   expect(h.store.get(payment.id)!.message).toBe('');
 });
 
-test('three attempts per IP count failures, survive restart and reset after ten minutes', async () => {
+test('three attempts per IP count failures and reset ten minutes after the first attempt', async () => {
   const h = harness();
-  const clock = spyOn(Date, 'now').mockReturnValue(600_001);
-  cleanups.push(() => { clock.mockRestore(); });
+  setSystemTime(600_001);
+  cleanups.push(() => { setSystemTime(); });
   h.coco.failCreate = true;
   expect((await h.post(input())).status).toBe(500);
   h.coco.failCreate = false;
@@ -318,29 +318,67 @@ test('three attempts per IP count failures, survive restart and reset after ten 
   const blocked = await h.post(input());
   expect(blocked.status).toBe(429);
   expect(blocked.headers.get('Retry-After')).toBe('600');
-  h.restart();
-  clock.mockReturnValue(660_001);
-  expect((await h.post(input())).status).toBe(429);
+  expect(await blocked.json()).toEqual({ error: { code: 'rate_limit', message: 'Too many invoice requests. Please try again later.' } });
+  setSystemTime(660_001);
+  expect((await h.post(input())).headers.get('Retry-After')).toBe('540');
   expect(h.coco.creations).toBe(3);
   expect((await h.post(input(), undefined, 'another-ip')).status).toBe(201);
-  clock.mockReturnValue(1_200_000);
+  setSystemTime(1_200_000);
+  expect((await h.post(input())).headers.get('Retry-After')).toBe('1');
+  setSystemTime(1_200_001);
   expect((await h.post(input())).status).toBe(201);
 });
 
-test('fifty global requests reset each minute and rejected requests do not consume client slots', async () => {
+test('fifty global attempts reset each minute; global rejections consume an IP slot', async () => {
   const h = harness();
-  const clock = spyOn(Date, 'now').mockReturnValue(600_001);
-  cleanups.push(() => { clock.mockRestore(); });
-  for (let i = 0; i < 50; i++) expect((await h.post(input(), undefined, `client-${i}`)).status).toBe(201);
+  setSystemTime(600_001);
+  cleanups.push(() => { setSystemTime(); });
+  for (let i = 0; i < 3; i++) expect((await h.post(input())).status).toBe(201);
+  // The per-IP limiter runs first, so these never consume global slots.
+  for (let i = 0; i < 5; i++) expect((await h.post(input())).status).toBe(429);
+  for (let i = 0; i < 47; i++) expect((await h.post(input(), undefined, `client-${i}`)).status).toBe(201);
   const blocked = await h.post(input(), undefined, 'new-client');
   expect(blocked.status).toBe(429);
   expect(blocked.headers.get('Retry-After')).toBe('60');
   expect(h.coco.creations).toBe(50);
+  setSystemTime(660_001);
+  for (let i = 0; i < 2; i++) expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
+  expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
+});
+
+test('restarting the API resets both in-memory quotas while preserving donation records', async () => {
+  const h = harness();
+  for (let i = 0; i < 3; i++) await h.post(input());
+  for (let i = 0; i < 47; i++) await h.post(input(), undefined, `client-${i}`);
+  expect((await h.post(input())).status).toBe(429);
+  expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
   h.restart();
-  expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
-  clock.mockReturnValue(660_000);
-  for (let i = 0; i < 3; i++) expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
-  expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
+  expect(h.store.list()).toHaveLength(50);
+  expect((await h.post(input())).status).toBe(201);
+  expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
+});
+
+test('Hono preserves exact signed JSON bytes, response headers and health endpoints', async () => {
+  const h = harness();
+  const body = JSON.stringify(input(), null, 2);
+  const event = finalizeEvent({ kind: 27235, content: '', created_at: Math.floor(Date.now() / 1000), tags: [
+    ['u', `${config.publicUrl}/donate`], ['method', 'POST'], ['payload', sha256(body)],
+  ] }, key);
+  const response = await h.request(new Request(`${config.publicUrl}/donate`, { method: 'POST', headers: {
+    'Content-Type': 'application/json', Origin: config.origins[0], Authorization: `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`,
+  }, body }));
+  expect(response.status).toBe(201);
+  expect(response.headers.get('Access-Control-Allow-Origin')).toBe(config.origins[0]);
+  expect(response.headers.get('Access-Control-Expose-Headers')).toContain('Retry-After');
+  expect(response.headers.get('Cache-Control')).toBe('no-store');
+  const { id } = await response.json();
+  expect(h.store.get(id)!.donorPubkey).toBe(getPublicKey(key));
+  const starting = createApp(h.service, config, { ready: () => false });
+  expect((await starting.request('/healthz')).status).toBe(200);
+  expect((await starting.request('/readyz')).status).toBe(503);
+  expect((await starting.request('/donations')).status).toBe(503);
+  expect((await h.request(new Request(`${config.publicUrl}/missing`))).status).toBe(404);
+  expect((await h.request(new Request(`${config.publicUrl}/donations?all=1`))).status).toBe(400);
 });
 
 test('wallet identity guards against the wrong seed and missing database pair', async () => {

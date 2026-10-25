@@ -1,6 +1,6 @@
 # Nut November
 
-Next.js frontend and a separate Bun donation API. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns the donation records in a second SQLite database. Anonymous donations and Nostr-verified donor identity are supported. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment.
+Next.js frontend and a separate Bun/Hono donation API. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns the donation records in a second SQLite database. Anonymous donations and Nostr-verified donor identity are supported. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment.
 
 ## Development
 

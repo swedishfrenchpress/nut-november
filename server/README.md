@@ -1,6 +1,6 @@
 # Donation API
 
-Bun 1.3.14, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations and request rate limits. Each library owns its connection and migrations; no transaction spans the two databases.
+Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata and operation associations. Each library owns its connection and migrations; no transaction spans the two databases.
 
 ## HTTP contract
 
@@ -38,7 +38,11 @@ Coco's default watchers/processors observe the mint and collect paid quotes; its
 
 `src/index.ts` opens Coco's database, awaits `initializeCoco()`, configures the mint and passes the manager directly to the donation service. The donation module contains the creation/capacity checks and public response mapping. Shutdown drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
 
-Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. New requests are limited to 3 per client IP per fixed 10-minute window and 50 globally per fixed minute. A limited request returns HTTP 429 with `Retry-After` set to the remaining seconds in the blocking window. On Fly, the client IP comes from Fly's proxy header; elsewhere it is the socket address. Every admitted submission consumes a request slot, including invoice creation failures; rate-limit rejections do not consume slots.
+Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. Hono handles routing, CORS, body limits and error dispatch. `hono-rate-limiter` 0.5.4 applies two independent memory stores after request validation and identity verification: 3 attempts per client IP per 10 minutes, followed by 50 globally per minute. Windows start with the first request for a key and counters reset on API restart. No rate-limit counters are stored in SQLite.
+
+A limited request returns HTTP 429 with the existing JSON error and `Retry-After`; CORS exposes that header to the frontend. Failed invoice creation still consumes slots. A per-IP rejection does not reach the global limiter; a global rejection consumes an IP slot. On Fly, the client IP still comes from Fly's proxy header; elsewhere it is the socket address. Public reads, health checks and preflight requests do not consume slots.
+
+Migration `0001_drop_rate_limits.sql` removes the obsolete counter table without touching donation records or wallet binding.
 
 `MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at the configured mint, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
 
@@ -103,3 +107,5 @@ Alert on sustained `paid` or `review` operations, rising pending quote counts, u
 Wallet balance inspection and eventual prize transfers belong to a private operator session using Coco's API and the same seed/database, with the public service stopped and a fresh backup retained. There is no public spending endpoint. Do not publish raw Coco operations or proofs in logs or support tickets. Keep that wallet under a single operator/writer during payout, then restart the service so Coco's watchers can resume.
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
+
+The Hono refactor passes 21 backend tests, including the new middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. In-memory limits intentionally reset on restart; they assume the existing single API process.

@@ -7,7 +7,7 @@ import { readConfig } from "./config.ts";
 import { sha256 } from "./identity.ts";
 import { DonationStore } from "./store.ts";
 import { DonationService } from "./donations.ts";
-import { createHandler } from "./http.ts";
+import { createApp } from "./http.ts";
 
 process.umask(0o077);
 const config = readConfig();
@@ -33,13 +33,13 @@ try {
 }
 const service = new DonationService(store, coco, config);
 let ready = true;
-const handler = createHandler(service, config, { ready: () => ready });
+const app = createApp(service, config, { ready: () => ready });
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: 4096,
   fetch(request, server) {
     const peer = server.requestIP(request)?.address ?? "unknown";
     const client = config.trustFlyProxy ? request.headers.get("fly-client-ip") ?? peer : peer;
-    return handler(request, client);
+    return app.fetch(request, { clientIp: client });
   },
 });
 console.info(`Donation API listening on port ${config.port}`);
