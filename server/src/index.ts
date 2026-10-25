@@ -8,6 +8,7 @@ import { sha256 } from "./identity.ts";
 import { DonationStore } from "./store.ts";
 import { DonationService } from "./donations.ts";
 import { createApp } from "./http.ts";
+import { DONATION_MIN_SATS, DONATION_MAX_SATS } from "../../shared/donations.ts";
 
 process.umask(0o077);
 const config = readConfig();
@@ -19,12 +20,24 @@ const store = new DonationStore(join(config.dataDir, "app.sqlite"));
 store.bindWallet(sha256(config.seed), config.mintUrl, walletAlreadyExists);
 const cocoDatabase = new Database(walletPath, { create: true });
 cocoDatabase.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
-const coco = await initializeCoco({ repo: new SqliteRepositories({ database: cocoDatabase }), seedGetter: async () => config.seed });
+const coco = await initializeCoco({
+  repo: new SqliteRepositories({ database: cocoDatabase }),
+  seedGetter: async () => config.seed,
+});
 try {
-  if (!(await coco.mint.isTrustedMint(config.mintUrl))) await coco.mint.addMint(config.mintUrl, { trusted: true });
-  const capability = await coco.mint.checkPaymentMethodCapability({ mintUrl: config.mintUrl, operation: "mint", method: "bolt11", unit: "sat" });
-  if (!capability.supported || (capability.minAmount && capability.minAmount.toNumber() > config.minSats)
-    || (capability.maxAmount && capability.maxAmount.toNumber() < config.maxSats)) throw new Error("Configured donation limits are incompatible with mint BOLT11/sat capabilities");
+  if (!(await coco.mint.isTrustedMint(config.mintUrl))) {
+    await coco.mint.addMint(config.mintUrl, { trusted: true });
+  }
+  const capability = await coco.mint.checkPaymentMethodCapability({
+    mintUrl: config.mintUrl, operation: "mint", method: "bolt11", unit: "sat",
+  });
+  if (
+    !capability.supported
+    || (capability.minAmount && capability.minAmount.toNumber() > DONATION_MIN_SATS)
+    || (capability.maxAmount && capability.maxAmount.toNumber() < DONATION_MAX_SATS)
+  ) {
+    throw new Error("Donation limits are incompatible with mint BOLT11/sat capabilities");
+  }
 } catch (error) {
   await coco.dispose();
   cocoDatabase.close();

@@ -18,7 +18,7 @@ Example anonymous request:
 {"amountSats":2100,"message":"Go nuts!"}
 ```
 
-Every submission requests a new invoice, including identical submissions after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are whole sats from 1 to 1,000,000 by default; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
+Every submission requests a new invoice, including identical submissions after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are whole sats from 1 to 1,000,000, using the same fixed limits as the frontend in `shared/donations.ts`; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
 
 For an attributed donation, include `Authorization: Nostr <base64 JSON event>`. The NIP-98 event must have kind 27235, empty content, a valid ID/signature, a timestamp within 60 seconds, and exactly one each of `u`, `method`, and `payload`. They must equal the configured public `/donate` URL, `POST`, and SHA-256 of the exact request bytes. The pubkey comes only from the verified signature. No authorization means anonymous; invalid authorization returns 401. The signature proves the request author, independently of which Lightning wallet pays.
 
@@ -49,6 +49,8 @@ Migration `0001_drop_rate_limits.sql` removes the obsolete counter table without
 This draft has not been deployed, so its initial migration was regenerated for the five-column schema. If you ran an earlier draft locally, use a fresh development data directory and seed; retain the earlier wallet if it contains funds.
 
 ## Configuration
+
+Donation amount limits come from `shared/donations.ts`. The former `MIN_DONATION_SATS` and `MAX_DONATION_SATS` environment overrides are no longer read; remove them from existing environment files. `MAX_PENDING_DONATIONS` remains configurable.
 
 Start from [.env.example](.env.example). `COCO_SEED_HEX` is required and must be exactly 128 hex characters (64 bytes). Keep it stable, backed up separately from the databases, and out of logs/source control. Startup validates mint capabilities and stores the seed fingerprint and mint URL in the app database. A changed seed/mint, a wallet without its app identity, or a missing wallet alongside existing donations stops startup. These checks catch common configuration errors; restoration still requires the matching database pair.
 

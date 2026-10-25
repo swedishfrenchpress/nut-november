@@ -13,9 +13,11 @@ type Env = {
   Variables: { donation: DonationRequest; donorPubkey: string | null };
 };
 
-export function createApp(service: DonationService,
-  config: Pick<Config, "origins" | "publicUrl" | "minSats" | "maxSats">,
-  options: { ready?: () => boolean } = {}) {
+export function createApp(
+  service: DonationService,
+  config: Pick<Config, "origins" | "publicUrl">,
+  options: { ready?: () => boolean } = {},
+) {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -30,11 +32,14 @@ export function createApp(service: DonationService,
   app.use("*", cors({ origin: config.origins, allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"], exposeHeaders: ["Retry-After"], maxAge: 600 }));
   app.onError((error, c) => {
-    if (error instanceof ApiError) return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    if (error instanceof ApiError) {
+      return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    }
     console.error("Donation API request failed");
-    return c.json({ error: { code: "internal", message: c.req.method === "POST"
+    const message = c.req.method === "POST"
       ? "We couldn't create an invoice. Please request a new one."
-      : "Payment information is temporarily unavailable." } }, 500);
+      : "Payment information is temporarily unavailable.";
+    return c.json({ error: { code: "internal", message } }, 500);
   });
   app.notFound((c) => c.json({ error: { code: "not_found", message: "Not found." } }, 404));
   app.get("/healthz", (c) => c.json({ status: "ok" }));
@@ -52,13 +57,21 @@ export function createApp(service: DonationService,
   app.post("/donate",
     bodyLimit({ maxSize: 4096, onError: () => { throw new ApiError(413, "body_size", "Request is too large."); } }),
     async (c, next) => {
-      if (c.req.header("content-type")?.split(";")[0].trim() !== "application/json") throw new ApiError(415, "content_type", "Send application/json.");
+      if (c.req.header("content-type")?.split(";")[0].trim() !== "application/json") {
+        throw new ApiError(415, "content_type", "Send application/json.");
+      }
       const raw = new Uint8Array(await c.req.arrayBuffer());
       let value: unknown;
-      try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); }
-      catch { throw new ApiError(400, "invalid_json", "Invalid JSON body."); }
-      c.set("donation", parseDonationRequest(value, config.minSats, config.maxSats));
-      c.set("donorPubkey", verifyDonorIdentity(c.req.header("authorization") ?? null, raw, `${config.publicUrl}/donate`)?.pubkey ?? null);
+      try {
+        value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+      } catch {
+        throw new ApiError(400, "invalid_json", "Invalid JSON body.");
+      }
+      c.set("donation", parseDonationRequest(value));
+      const identity = verifyDonorIdentity(
+        c.req.header("authorization") ?? null, raw, `${config.publicUrl}/donate`,
+      );
+      c.set("donorPubkey", identity?.pubkey ?? null);
       await next();
     },
     rateLimiter<Env>({ windowMs: 10 * 60_000, limit: 3, keyGenerator: (c) => sha256(c.env.clientIp), message: limited }),

@@ -1,5 +1,5 @@
-import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
-import { Manager, MemoryRepositories, parseUnitAmount, toAmount, type MintOperation, type MintQuote, type PendingMintOperation } from "@cashu/coco-core";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { CocoFixture } from "./helpers/coco.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,53 +11,8 @@ import { sha256 } from "../src/identity.ts";
 import type { DonationPayment, DonationRequest } from "../../shared/donations.ts";
 
 const config = { mintUrl: "https://mint.example", origins: ["https://nutnovember.org"],
-  publicUrl: "https://api.nutnovember.org", minSats: 1, maxSats: 1_000_000, maxPending: 1000 };
+  publicUrl: "https://api.nutnovember.org", maxPending: 1000 };
 const key = new Uint8Array(32).fill(1);
-class CocoFixture {
-  manager = new Manager(new MemoryRepositories(), async () => new Uint8Array(64).fill(1));
-  operations = new Map<string, Exclude<MintOperation, { state: 'init' }>>();
-  quotes = new Map<string, MintQuote<'bolt11'>>();
-  creations = 0;
-  reads = 0;
-  failCreate = false;
-  afterPrepare?: () => Promise<void>;
-  constructor() {
-    spyOn(this.manager.quotes.mint, 'create').mockImplementation(async (input) => {
-      this.creations++;
-      if (this.failCreate) throw new Error('Mint unavailable');
-      if (input.method !== 'bolt11') throw new Error('Expected BOLT11');
-      const { amount, unit } = parseUnitAmount(input.amount, { explicitUnit: input.unit });
-      const quoteId = crypto.randomUUID();
-      const quote: MintQuote<'bolt11'> = { quoteId, quote: quoteId, mintUrl: input.mintUrl, method: 'bolt11', unit,
-        amount, request: `lnbc-test-${quoteId}`, expiry: Math.floor(Date.now() / 1000) + 60,
-        createdAt: Date.now(), updatedAt: Date.now(), state: 'UNPAID', reusable: false,
-        amountPaid: toAmount(0), amountIssued: toAmount(0), remoteUpdatedAt: null, quoteData: { amount } };
-      this.quotes.set(quoteId, quote);
-      return quote;
-    });
-    spyOn(this.manager.quotes.mint, 'listPending').mockImplementation(async () => [...this.quotes.values()].filter((quote) => quote.amountIssued.isZero()));
-    spyOn(this.manager.quotes.mint, 'get').mockImplementation(async ({ quoteId }) => this.quotes.get(quoteId) ?? null);
-    spyOn(this.manager.ops.mint, 'prepare').mockImplementation(async ({ quote: ref }) => {
-      const quote = this.quotes.get(ref.quoteId)!;
-      const operation: PendingMintOperation = { id: crypto.randomUUID(), amount: quote.amount, request: quote.request,
-        expiry: quote.expiry, createdAt: Date.now(), updatedAt: Date.now(), state: 'pending', mintUrl: quote.mintUrl,
-        quoteId: quote.quoteId, method: 'bolt11', methodData: {}, unit: 'sat', outputData: { keep: [], send: [] } };
-      this.operations.set(operation.id, operation);
-      await this.afterPrepare?.();
-      return { ...operation };
-    });
-    spyOn(this.manager.ops.mint, 'get').mockImplementation(async (id) => {
-      this.reads++;
-      const op = this.operations.get(id);
-      return op ? { ...op } : null;
-    });
-  }
-  settle(id: string, error?: string) {
-    const op = this.operations.get(id)!;
-    Object.assign(op, { state: 'finalized', updatedAt: Date.now(), error });
-    Object.assign(this.quotes.get(op.quoteId)!, { amountPaid: op.amount, amountIssued: op.amount, state: 'ISSUED' });
-  }
-}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -67,14 +22,15 @@ function harness(maxPending = config.maxPending) {
   const coco = new CocoFixture();
   const limits = { ...config, maxPending };
   let store = new DonationStore(filename);
-  let service = new DonationService(store, coco.manager, limits);
+  let service = new DonationService(store, coco.client, limits);
   let app = createApp(service, config);
-  cleanups.push(async () => { await service.drain(); await coco.manager.dispose(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  cleanups.push(async () => { await service.drain(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return {
     coco, get store() { return store; }, get service() { return service; },
+    // Reopen app persistence; the fake wallet stays in memory.
     restart() {
       store.close(); store = new DonationStore(filename);
-      service = new DonationService(store, coco.manager, limits);
+      service = new DonationService(store, coco.client, limits);
       app = createApp(service, config);
     },
     request: (request: Request, client = '127.0.0.1') => app.request(request, undefined, { clientIp: client }),
@@ -236,7 +192,7 @@ test('invalid, expired, future, wrong-method, wrong-URL and tampered-body signat
   expect(h.coco.creations).toBe(0);
 });
 
-test('Coco state changes are visible after restart without event replay or app state updates', async () => {
+test('reopening app storage reads current wallet state without event replay', async () => {
   const h = harness();
   const payment = await (await h.post(input())).json() as DonationPayment;
   const row = h.store.get(payment.id)!;
@@ -299,12 +255,18 @@ test('CORS, methods, amount limits, body limits and message policy are enforced'
   expect((await h.request(new Request(`${config.publicUrl}/donate`))).status).toBe(405);
   for (const amountSats of [0, -1, 1.5, 1_000_001, Number.MAX_SAFE_INTEGER]) expect((await h.post(input(amountSats))).status).toBe(400);
   expect((await h.post({ ...input(), message: 'x'.repeat(281) })).status).toBe(400);
+  expect((await h.post({ ...input(), message: null })).status).toBe(400);
   expect((await h.post({ ...input(), requestId: crypto.randomUUID() })).status).toBe(400);
   expect((await h.post({ ...input(), operationId: 'other-operation' })).status).toBe(400);
   const body = new Request(`${config.publicUrl}/donate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'x'.repeat(4097) });
   expect((await h.request(body)).status).toBe(413);
   const payment = await (await h.post(input(1000))).json() as DonationPayment;
   expect(h.store.get(payment.id)!.message).toBe('');
+  for (const amountSats of [1, 1_000_000]) {
+    const response = await h.post({ amountSats });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ amountSats });
+  }
 });
 
 test('three attempts per IP count failures and reset ten minutes after the first attempt', async () => {
