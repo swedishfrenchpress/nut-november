@@ -1,13 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-
-// Nut November 2026 runs Nov 1–27 (UTC).
-export const STARTS_AT = Date.UTC(2026, 10, 1);
-export const ENDS_AT = Date.UTC(2026, 10, 28); // submissions close at the end of Nov 27
-/** Shown wherever the deadline is spelled out. */
-export const DEADLINE_LABEL = "Nov 27, 23:59 UTC";
-export const DATES_LABEL = "Nov 1–27, 2026";
+import { STARTS_AT, ENDS_AT } from "../../../shared/hackathon.ts";
+export { STARTS_AT, ENDS_AT, DEADLINE_LABEL, DATES_LABEL } from "../../../shared/hackathon.ts";
 
 export type Phase =
   | { kind: "upcoming"; days: number }

@@ -14,7 +14,7 @@ import {
 } from "../../shared/donations.ts";
 import { ApiError } from "./errors.ts";
 import type { DonationRow } from "./schema.ts";
-import { DonationStore } from "./store.ts";
+import { AppStore } from "./store.ts";
 import { MINT_URL, type Config } from "./config.ts";
 
 type PreparedOperation = Exclude<MintOperation, { state: "init" }>;
@@ -102,7 +102,7 @@ export class DonationService {
   private unsubscribe?: () => void;
   private feedSyncFailed = false;
   constructor(
-    private store: DonationStore,
+    private store: AppStore,
     private coco: DonationCoco,
     private config: Pick<Config, "maxPending">,
   ) {}
@@ -138,7 +138,7 @@ export class DonationService {
         confirmedAt: null,
       };
       // The invoice is exposed only after the donor metadata has been committed.
-      this.store.insert(row);
+      this.store.insertDonation(row);
       // A very fast payment may have finalized before the metadata insert.
       await this.sync(op.id);
       return payment(op, quote);
@@ -150,7 +150,7 @@ export class DonationService {
   async drain() { await this.creationQueue; }
 
   async get(id: string): Promise<DonationPayment> {
-    const row = this.store.get(id);
+    const row = this.store.getDonation(id);
     if (!row) throw new ApiError(404, "not_found", "Donation not found.");
     const { op, quote } = await this.operation(row);
     return payment(op, quote);

@@ -5,7 +5,7 @@ import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DonationStore } from "../src/store.ts";
+import { AppStore } from "../src/store.ts";
 
 test("schema upgrades keep operation IDs, donor metadata and wallet binding while removing redundant columns and rate limits", () => {
   const directory = mkdtempSync(join(tmpdir(), "nut-hono-migration-"));
@@ -23,11 +23,11 @@ test("schema upgrades keep operation IDs, donor metadata and wallet binding whil
       migrate(drizzle(previous), { migrationsFolder: migrationDir });
       previous.exec("INSERT INTO donations VALUES ('private', 'public', 'operation', 'Go nuts', NULL), ('private-2', 'public-2', 'operation-2', 'Signed donation', 'verified-pubkey'); INSERT INTO settings VALUES ('wallet', 'binding'); INSERT INTO rate_limits VALUES ('global', 123, 17);");
     } finally { previous.close(); }
-    const upgraded = new DonationStore(filename);
+    const upgraded = new AppStore(filename);
     try {
-      expect(upgraded.get("operation")).toEqual({ operationId: "operation", message: "Go nuts", donorPubkey: null, amountSats: null, confirmedAt: null });
-      expect(upgraded.get("operation-2")).toEqual({ operationId: "operation-2", message: "Signed donation", donorPubkey: "verified-pubkey", amountSats: null, confirmedAt: null });
-      expect(upgraded.get("private")).toBeUndefined();
+      expect(upgraded.getDonation("operation")).toEqual({ operationId: "operation", message: "Go nuts", donorPubkey: null, amountSats: null, confirmedAt: null });
+      expect(upgraded.getDonation("operation-2")).toEqual({ operationId: "operation-2", message: "Signed donation", donorPubkey: "verified-pubkey", amountSats: null, confirmedAt: null });
+      expect(upgraded.getDonation("private")).toBeUndefined();
       const columns = upgraded.database.query<{ name: string; pk: number }, []>("PRAGMA table_info(donations)").all();
       expect(columns.map((column) => column.name)).toEqual(["operation_id", "message", "donor_pubkey", "amount_sats", "confirmed_at"]);
       expect(columns.find((column) => column.name === "operation_id")!.pk).toBe(1);
