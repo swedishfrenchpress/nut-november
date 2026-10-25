@@ -2,7 +2,7 @@
 
 import type { WindowNostr } from "nostr-tools/nip07";
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { FormEvent, useRef, useState, useSyncExternalStore } from "react";
 import PacketPage, {
   PoolAmount,
   field,
@@ -20,17 +20,10 @@ import {
 import SuccessMessage from "./components/SuccessMessage";
 import InvoiceDisplay from "./components/InvoiceDisplay";
 import { useDonationPayment } from "./hooks/useDonationPayment";
-import { createDonation, DONATION_SESSION_KEY, signDonationRequest } from "../lib/donationApi";
-import { DONATION_MAX_SATS, isDonationPayment, type DonationPayment, type DonationRequest } from "../../../shared/donations";
+import { createDonation, signDonationRequest } from "../lib/donationApi";
+import { DONATION_MAX_SATS, type DonationPayment, type DonationRequest } from "../../../shared/donations";
 
 const PRESETS = [21, 1000, 21000];
-function remember(payment: DonationPayment | null) {
-  try {
-    if (payment) sessionStorage.setItem(DONATION_SESSION_KEY, JSON.stringify(payment));
-    else sessionStorage.removeItem(DONATION_SESSION_KEY);
-  } catch { /* Payment remains usable if storage is unavailable. */ }
-}
-
 function hasNostrSigner() {
   return typeof (window as Window & { nostr?: WindowNostr }).nostr?.signEvent === "function";
 }
@@ -57,34 +50,12 @@ function Page() {
   const [submission, setSubmission] = useState<"signing" | "invoice" | null>(null);
   const isSubmitting = submission !== null;
   const [initialPayment, setInitialPayment] = useState<DonationPayment | null>(null);
-  const [restoring, setRestoring] = useState(true);
   const submitting = useRef(false);
   const { payment, checking, error: paymentError } = useDonationPayment(initialPayment);
 
-  useEffect(() => {
-    let active = true;
-    // Restore after hydration; no private payment state is included in server HTML.
-    void Promise.resolve().then(() => {
-      if (!active) return;
-      try {
-        const saved: unknown = JSON.parse(sessionStorage.getItem(DONATION_SESSION_KEY) ?? "null");
-        if (isDonationPayment(saved)) {
-          setAmount(String(saved.amountSats));
-          setInitialPayment(saved);
-        }
-      } catch { /* Ignore an unreadable session cache. */ }
-      setRestoring(false);
-    });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (payment) remember(payment);
-  }, [payment]);
-
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (submitting.current || restoring) return;
+    if (submitting.current) return;
 
     setSubmissionError(null);
     const sats = Number(amount);
@@ -117,7 +88,6 @@ function Page() {
 
       setSubmission("invoice");
       const next = await createDonation(request, authorization);
-      remember(next);
       setInitialPayment(next);
     } catch (err) {
       setSubmissionError(err instanceof Error && err.name !== "TypeError" && err.name !== "TimeoutError"
@@ -130,7 +100,6 @@ function Page() {
 
   function handleBack() {
     setInitialPayment(null);
-    remember(null);
   }
 
   function handleReset() {
@@ -155,7 +124,7 @@ function Page() {
       <DonationData>{({ total }) => <PoolAmount sats={total}>sats in the pool now</PoolAmount>}</DonationData>
 
       <div className="mx-auto mt-12 max-w-md">
-        {restoring ? <p role="status" className={fieldHint}>Checking for an unfinished donation…</p> : payment ? (
+        {payment ? (
           <InvoiceDisplay payment={payment} checking={checking} error={paymentError} onBack={handleBack} />
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
