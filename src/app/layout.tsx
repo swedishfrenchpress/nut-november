@@ -37,7 +37,7 @@ export const metadata: Metadata = {
     siteName: "Nut November",
     images: [
       {
-        url: "https://nutnovember.org/opengraph-2026.jpg",
+        url: "https://nutnovember.org/opengraph-2026-v2.jpg",
         width: 2400,
         height: 1260,
         alt: "Nut November 2026, a month-long hackathon for Cashu builders, November 1 to 27",
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Nut November - A month-long hackathon for Cashu builders",
     description: "A month-long hackathon for Cashu builders who just can't hold their nuts.",
-    images: ["https://nutnovember.org/opengraph-2026.jpg"],
+    images: ["https://nutnovember.org/opengraph-2026-v2.jpg"],
   },
 };
 
