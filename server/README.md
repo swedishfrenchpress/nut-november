@@ -1,6 +1,6 @@
 # Nut November API
 
-Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations, the confirmed donation feed cache and private project submissions. Each library owns its connection and migrations; no transaction spans the two databases.
+Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations, the confirmed donation feed cache, private project submissions and withdrawal retry records. Each library owns its connection and migrations; no transaction spans the two databases.
 
 ## HTTP contract
 
@@ -105,7 +105,7 @@ The additive `0004_submissions.sql` migration runs at API startup and preserves 
 
 The mint is fixed to `https://mint.minibits.cash/Bitcoin` in `src/config.ts`. Lightning amount limits come from its BOLT11/sat minting capabilities. Cashu accepts positive safe-integer sats independently of those bounds. `MINT_URL`, `MIN_DONATION_SATS` and `MAX_DONATION_SATS` environment overrides are no longer read; remove them from existing environment files. `MAX_PENDING_DONATIONS` remains configurable.
 
-Start from [.env.example](.env.example). `COCO_SEED_HEX` is required and must be exactly 128 hex characters (64 bytes). Keep it stable, backed up separately from the databases, and out of logs/source control. Startup validates mint capabilities and stores the seed fingerprint and mint URL in the app database. A changed seed/mint, a wallet without its app identity, or a missing wallet alongside existing donations stops startup. These checks catch common configuration errors; restoration still requires the matching database pair.
+Start from [.env.example](.env.example). `COCO_SEED_HEX` is required and must be exactly 128 hex characters (64 bytes). Keep it stable, backed up separately from the databases, and out of logs/source control. Startup validates mint capabilities and stores the seed fingerprint and mint URL in the app database. A changed seed/mint, a wallet without its app identity, or a missing wallet alongside existing donations or withdrawal requests stops startup. These checks catch common configuration errors; restoration still requires the matching database pair.
 
 The service uses WAL, restrictive data-directory/file permissions, and graceful SIGTERM/SIGINT shutdown. Coco recovery runs on startup before serving donations. Changing the fixed mint requires a code change and a wallet migration.
 
@@ -161,28 +161,45 @@ Alert on sustained `paid` or `review` operations, rising pending quote counts, f
 
 ### Wallet balance and Cashu withdrawals
 
-Use the private wallet CLI with the API's existing `DATA_DIR` and `COCO_SEED_HEX`. Stop the API gracefully and retain a fresh backup before withdrawing. These commands are available from the repository root or `server/`:
+Keep the API running. Its existing Coco manager owns all wallet operations, recovery and watchers. The Commander CLI is an HTTP client; it needs neither `COCO_SEED_HEX` nor database access.
+
+Set `WALLET_ADMIN_TOKEN` to a separate random operator credential (32–256 URL-safe characters) in the API environment and restart once to enable the listener. For example, generate a credential privately with `openssl rand -hex 32`, then store it securely. Unset/empty disables the listener. `WALLET_ADMIN_PORT` defaults to `3002` and must differ from the public `PORT`. The bind address is fixed to `127.0.0.1`; this is a separate Hono app, never mounted in the public router or exposed through the Fly HTTP service. All private routes require `Authorization: Bearer <operator credential>`, reject browser origins and return `Cache-Control: no-store`.
+
+Run the CLI in the same machine/container network namespace, with the matching `WALLET_ADMIN_TOKEN` and optional `WALLET_ADMIN_PORT` in its environment. On Fly, run it inside the API machine through your private shell; the local CLI always connects to `127.0.0.1`, bypasses environment proxies for that address, and never follows redirects. These scripts work from the repository root or `server/`:
 
 ```sh
 bun run wallet:balance
 bun run wallet:withdraw 2100 --output /secure/prize.cashu
 ```
 
-Add `--help` to either command for generated usage and option descriptions.
+Add `--help` to either command for generated usage and option descriptions. Keep a current backup before payout, and keep the operator credential and bearer tokens out of logs, source control and support tickets.
 
-`wallet:balance` prints JSON containing the mint, unit, `spendableSats`, `reservedSats`, `totalSats`, and a `withdrawals` list with operation IDs, states, amounts and fees. This reads local Coco state without mint requests or startup recovery. `totalSats` is spendable plus reserved ready proofs; outgoing tokens are no longer part of that balance. Pending withdrawals are listed separately and may already have been claimed since the last mint check. This wallet balance differs from the historical donation total, which payouts do not reduce.
+`wallet:balance` prints JSON with the mint, unit, `spendableSats`, `reservedSats`, `totalSats`, prepared/pending `withdrawals` (operation ID, request ID, state, amount and fee), and `unresolvedRequests` whose operation association is uncertain. Reading balance makes no mint requests. `totalSats` is spendable plus reserved ready proofs; outgoing tokens are listed separately and may already have been claimed since the last mint check. Payouts do not reduce the historical donation total.
 
-`wallet:withdraw <sats>` accepts positive whole safe-integer sats and uses Coco's persisted send operations to produce a spendable Cashu token from the configured Minibits mint. Coco handles proof selection, swaps, change and fees; the requested amount is the token amount, with any input fees charged additionally. Without `--output`, the token alone goes to stdout. With `--output`, the CLI creates a new file with permissions `0600`, writes and flushes the token, and prints no token to the terminal. It refuses to overwrite an existing file. The token is bearer money; keep it out of logs and support tickets. Operation IDs, amount, fee and progress go to stderr.
+`wallet:withdraw <sats>` accepts positive whole safe-integer sats. Coco handles proof selection, swaps, change and fees; the token contains the requested amount and any input fees are charged additionally. Without `--output`, only the token goes to stdout. With `--output`, the CLI creates a new file with mode `0600`, writes and flushes the token, and prints no token to the terminal. It refuses to overwrite an existing file. Progress and recovery IDs go to stderr.
 
-Before executing a send, the CLI prints its operation ID and resume command. If token output is lost or the command is interrupted, inspect `wallet:balance` and resume the same operation:
+Before sending its first HTTP request, the CLI prints a random withdrawal request ID and resume command. The server persists the request before preparing the Coco send and records the operation association before execution. Retrying a request uses that same operation; a different amount for an existing request ID returns a conflict. After an interruption or lost response, resume the printed ID:
 
 ```sh
+bun run wallet:withdraw --request REQUEST_ID --output /secure/recovered-prize.cashu
+# If the Coco operation ID is already known:
 bun run wallet:withdraw --operation OPERATION_ID --output /secure/recovered-prize.cashu
 ```
 
-Resuming a prepared operation executes that send. Resuming a pending operation exports its persisted token again; it does not create another payment. The withdraw command runs Coco startup recovery with background watchers/processors disabled. A lost swap response may cause Coco to restore the funds to the wallet and mark the send `rolled_back`, instead of retaining an outgoing token. Finalized, rolled-back and unresolved operations produce no token. Inspect the operation's reported state and balance before deciding whether a new withdrawal is needed. Never create a new withdrawal merely to retry lost output. A failed command can leave an empty output file; use a new destination when resuming.
+A prepared operation executes once; a pending operation is refreshed and its persisted token is exported again. The CLI performs no automatic retries. A lost mint swap response may cause Coco to restore funds and mark the send `rolled_back`; finalized, rolled-back and unresolved sends do not export tokens. Inspect the reported state and balance before deciding whether a new withdrawal is needed. Failed commands can leave empty output files; use a new destination when resuming.
 
-Both commands require nonempty existing `coco.sqlite` and `app.sqlite`, and verify the seed/mint binding before opening Coco. They never initialize a new wallet. The API and CLI share an exclusive process lock in `DATA_DIR/wallet-lock.sqlite`; a second process fails immediately, and process exit (including a crash) releases the lock. Do not delete or replace the lock file. Keep one operator/writer during payout, then restart the API so its recovery and watchers resume and reconcile any donations collected during CLI recovery. There is no public balance or spending endpoint.
+There is no transaction spanning app and Coco databases. A crash between preparing a send and saving its association leaves an unresolved request. Repeating that request fails closed instead of preparing another send. `wallet:balance` shows the unresolved request and any prepared operation for private inspection and recovery by operation ID. Never start another withdrawal merely to retry lost output. Coco startup recovery runs only with server startup; an operation left executing can require a server restart and inspection.
+
+Private HTTP contract:
+
+| Route | Behavior |
+| --- | --- |
+| `GET /balance` | Read local wallet balances and outstanding withdrawals. |
+| `POST /withdrawals` | Accept `{ requestId, amountSats }`, persist the intent, and create/export its token idempotently. |
+| `POST /withdrawals/requests/:requestId` | Resume the request's associated withdrawal. |
+| `POST /withdrawals/:operationId` | Resume a known Coco send operation, including earlier CLI withdrawals. |
+
+Migration `0006_wallet_withdrawals.sql` adds request IDs, amounts and nullable unique Coco operation associations to app SQLite. The API serializes operator withdrawals and relies on Coco's shared mint lock for proof selection and deterministic output allocation alongside donations. Shutdown stops both listeners and drains withdrawals before disposing Coco. Only the server holds `DATA_DIR/wallet-lock.sqlite` to prevent a second wallet-owning process; the CLI does not acquire it. Process exit releases the lock automatically. Do not delete the lock file or run another wallet writer against these databases.
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
 

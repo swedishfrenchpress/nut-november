@@ -16,6 +16,14 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// An intent is durable before Coco prepares a send; an unbound intent must never
+// silently prepare another send after a crash between the two database commits.
+export const withdrawalRequests = sqliteTable("withdrawal_requests", {
+  requestId: text("request_id").primaryKey(),
+  amountSats: integer("amount_sats").notNull(),
+  operationId: text("operation_id").unique(),
+});
+
 export const submissions = sqliteTable("submissions", {
   id: text("id").primaryKey(),
   createdAt: integer("created_at").notNull(),

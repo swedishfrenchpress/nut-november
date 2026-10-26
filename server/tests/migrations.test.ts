@@ -67,3 +67,48 @@ test("Cashu migration preserves previously confirmed donations and enforces uniq
     } finally { upgraded.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("withdrawal migration preserves wallet binding and donations and keeps retry associations across restart", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nut-withdrawal-migration-"));
+  const migrationDir = join(directory, "old-migrations");
+  mkdirSync(join(migrationDir, "meta"), { recursive: true });
+  const existing = join(import.meta.dir, "../drizzle");
+  const journal = JSON.parse(readFileSync(join(existing, "meta/_journal.json"), "utf8"));
+  journal.entries = journal.entries.slice(0, 6);
+  writeFileSync(join(migrationDir, "meta/_journal.json"), JSON.stringify(journal));
+  for (const entry of journal.entries) writeFileSync(join(migrationDir, `${entry.tag}.sql`), readFileSync(join(existing, `${entry.tag}.sql`)));
+  const filename = join(directory, "app.sqlite");
+  try {
+    const previous = new Database(filename);
+    try {
+      migrate(drizzle(previous), { migrationsFolder: migrationDir });
+      previous.exec("INSERT INTO donations (operation_id, message, amount_sats, confirmed_at) VALUES ('confirmed', 'Donation', 2100, 1793000000); INSERT INTO settings VALUES ('wallet', 'binding');");
+    } finally { previous.close(); }
+    const upgraded = new AppStore(filename);
+    try {
+      expect(upgraded.confirmed()).toHaveLength(1);
+      expect(upgraded.listWithdrawalRequests()).toEqual([]);
+      upgraded.insertWithdrawalRequest("request-one", 21);
+      upgraded.bindWithdrawalRequest("request-one", "send-one");
+      upgraded.insertWithdrawalRequest("request-two", 42);
+      expect(() => upgraded.bindWithdrawalRequest("request-two", "send-one")).toThrow();
+    } finally { upgraded.close(); }
+    const reopened = new AppStore(filename);
+    try {
+      expect(reopened.getWithdrawalRequest("request-one")).toEqual({ requestId: "request-one", amountSats: 21, operationId: "send-one" });
+      expect(reopened.getWithdrawalRequest("request-two")).toEqual({ requestId: "request-two", amountSats: 42, operationId: null });
+      expect(reopened.database.query("SELECT value FROM settings WHERE key = 'wallet'").get()).toEqual({ value: "binding" });
+      expect(reopened.confirmed()[0].amountSats).toBe(2100);
+    } finally { reopened.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("wallet binding rejects a missing Coco database when only withdrawal requests remain", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nut-withdrawal-binding-"));
+  const store = new AppStore(join(directory, "app.sqlite"));
+  try {
+    store.bindWallet("fingerprint", "mint", false);
+    store.insertWithdrawalRequest("withdrawal", 21);
+    expect(() => store.bindWallet("fingerprint", "mint", false)).toThrow("Wallet database is missing");
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

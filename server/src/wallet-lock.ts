@@ -9,7 +9,7 @@ export function acquireWalletLock(dataDir: string): () => void {
     lock.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;");
   } catch {
     lock.close();
-    throw new Error("Wallet is in use. Stop the API and any other wallet CLI before continuing.");
+    throw new Error("Wallet is in use by another API process. Run only one wallet owner.");
   }
   return () => { lock.close(); };
 }
