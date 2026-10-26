@@ -10,8 +10,7 @@ Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API pr
 | `GET /donate/limits` | Read the mint’s BOLT11/sat donation bounds through Coco. |
 | `GET /donate/:id` | Read private payment status from local persistence. |
 | `GET /donations` | Read the current confirmed donation list, count and sum. |
-| `GET /healthz` | Process liveness. |
-| `GET /readyz` | Ready after Coco initialization and its startup recovery. |
+| `GET /healthz` | HTTP health check, available after startup completes. |
 
 Example anonymous request:
 
@@ -39,7 +38,7 @@ The donations table has five columns: private `id`, `public_id`, `operation_id`,
 
 Coco's default watchers/processors observe the mint and collect paid quotes; its startup recovery resumes persisted operations. There is no application payment projection, event-replay requirement, reconciliation worker or retry queue. Paid operations that remain stalled or finalize with an error require operator investigation through Coco. Browser polling never calls the mint.
 
-`src/index.ts` opens Coco's database, awaits `initializeCoco()`, configures the mint and passes the manager directly to the donation service. The donation module contains the creation/capacity checks and public response mapping. Shutdown drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
+`src/index.ts` initializes app persistence, opens Coco's database, awaits `initializeCoco()`, configures the mint and validates its capabilities sequentially before starting the HTTP server. It passes the manager directly to the donation service. There is no separate readiness state or endpoint: initialization failures prevent the listener from starting. The donation module contains the creation/capacity checks and public response mapping. Shutdown stops the HTTP server, drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
 
 Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. Hono handles routing, CORS, body limits and error dispatch. `hono-rate-limiter` 0.5.4 applies two independent memory stores after request validation and identity verification: 3 attempts per client IP per 10 minutes, followed by 50 globally per minute. Windows start with the first request for a key and counters reset on API restart. No rate-limit counters are stored in SQLite.
 
@@ -61,7 +60,7 @@ The service uses WAL, restrictive data-directory/file permissions, and graceful 
 
 ## Fly deployment
 
-[fly.toml](fly.toml) defines a separate `nut-november-api` app in `ams`, a `/data` volume, TLS, a readiness check, and no automatic stopping. [Dockerfile](Dockerfile) must be built with the repository root as its context:
+[fly.toml](fly.toml) defines a separate `nut-november-api` app in `ams`, a `/data` volume, TLS, a `/healthz` check, and no automatic stopping. [Dockerfile](Dockerfile) must be built with the repository root as its context:
 
 ```sh
 docker build -f server/Dockerfile -t nut-november-api .
@@ -80,7 +79,7 @@ fly certs add api.nutnovember.org --app nut-november-api
 
 The private secrets file must contain the production `COCO_SEED_HEX=...` value. Store a recovery copy securely before accepting donations. `fly secrets import` accepts name/value pairs on stdin. Volume creation enables scheduled snapshots by default; retention is explicitly configured above. [Secrets command](https://docs.fly.io/flyctl/cmd/fly_secrets_import), [volume options](https://docs.fly.io/flyctl/cmd/fly_volumes_create).
 
-Follow the certificate command's DNS instructions and verify HTTPS at `/readyz` and `/donations`. Confirm there is one active machine and the intended volume, secret and allowed origins. Avoid blue/green deployments, cloning the wallet to live replicas, or running a second process against either database. An immediate deployment accepts brief downtime while preserving one wallet writer.
+Follow the certificate command's DNS instructions and verify HTTPS at `/healthz` and `/donations`. Confirm there is one active machine and the intended volume, secret and allowed origins. Avoid blue/green deployments, cloning the wallet to live replicas, or running a second process against either database. An immediate deployment accepts brief downtime while preserving one wallet writer.
 
 The manual [API workflow](../.github/workflows/api-deploy.yml) uses the GitHub environment `donation-api`; configure its `FLY_API_TOKEN` with an app-scoped token for this API. Keep it separate from the existing frontend deployment token. The workflow type-checks/tests the backend before deployment. Provision the volume/seed/DNS first. Do not merge the frontend switch until the API is reachable: the frontend's existing workflow deploys `main` automatically.
 
@@ -94,7 +93,7 @@ Back up both databases as one generation, along with the deployed version and mi
 
 For a portable filesystem backup, stop the API gracefully and verify it has exited, then archive the entire data directory, including any remaining `-wal` and `-shm` files. Restart only after the copy finishes. Never copy just live SQLite main files: uncheckpointed WAL entries can contain funds or donation associations. A consistent snapshot of the entire stopped volume is also suitable. On Fly, disable proxy autostart during planned backup/restore maintenance so a request cannot restart the writer, wait for the machine to be stopped, and snapshot its whole volume before resuming it. Use the provider's volume snapshot/export facilities for the off-machine copy.
 
-Restore into a separate, private environment with the same pinned packages, mint and original seed. Stop the original writer before starting a restored wallet: never run two active copies. Restore the complete pair/WAL files to an empty data directory, run SQLite `PRAGMA integrity_check` on each, then start the service. Confirm `/readyz`, the public total/count, known private status references, and Coco's recovered balance/operations before switching traffic. Restore testing must not publish a second donation endpoint. Never discard a current wallet database merely to make a fingerprint check pass.
+Restore into a separate, private environment with the same pinned packages, mint and original seed. Stop the original writer before starting a restored wallet: never run two active copies. Restore the complete pair/WAL files to an empty data directory, run SQLite `PRAGMA integrity_check` on each, then start the service. Confirm `/healthz`, the public total/count, known private status references, and Coco's recovered balance/operations before switching traffic. Restore testing must not publish a second donation endpoint. Never discard a current wallet database merely to make a fingerprint check pass.
 
 For app-level triage, query the metadata database through a private shell with a read-only SQLite connection. This prints counts of stored requests and attributed donors, including unpaid invoices. Payment totals and states must be inspected through Coco or the HTTP read endpoints:
 
@@ -107,7 +106,7 @@ db.close();
 '
 ```
 
-Alert on sustained `paid` or `review` operations, rising pending quote counts, unhealthy readiness, low disk space, and stale backups. Request failures are logged without raw wallet objects. A `review` state needs private inspection of Coco's operation and quote. Do not count an error-finalized operation solely because the mint says issued.
+Alert on sustained `paid` or `review` operations, rising pending quote counts, failing HTTP health checks, low disk space, and stale backups. Request failures are logged without raw wallet objects. A `review` state needs private inspection of Coco's operation and quote. Do not count an error-finalized operation solely because the mint says issued.
 
 Wallet balance inspection and eventual prize transfers belong to a private operator session using Coco's API and the same seed/database, with the public service stopped and a fresh backup retained. There is no public spending endpoint. Do not publish raw Coco operations or proofs in logs or support tickets. Keep that wallet under a single operator/writer during payout, then restart the service so Coco's watchers can resume.
 

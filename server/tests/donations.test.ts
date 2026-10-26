@@ -381,7 +381,7 @@ test('restarting the API resets both in-memory quotas while preserving donation 
   expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
 });
 
-test('Hono preserves exact signed JSON bytes, response headers and health endpoints', async () => {
+test('Hono preserves exact signed JSON bytes, response headers and the health endpoint', async () => {
   const h = harness();
   const body = JSON.stringify(input(), null, 2);
   const event = finalizeEvent({ kind: 27235, content: '', created_at: Math.floor(Date.now() / 1000), tags: [
@@ -396,11 +396,10 @@ test('Hono preserves exact signed JSON bytes, response headers and health endpoi
   expect(response.headers.get('Cache-Control')).toBe('no-store');
   const { id } = await response.json();
   expect(h.store.get(id)!.donorPubkey).toBe(getPublicKey(key));
-  const starting = createApp(h.service, config, { ready: () => false });
-  expect((await starting.request('/healthz')).status).toBe(200);
-  expect((await starting.request('/readyz')).status).toBe(503);
-  expect((await starting.request('/donations')).status).toBe(503);
-  expect((await starting.request('/donate/limits')).status).toBe(503);
+  const health = await h.request(new Request(`${config.publicUrl}/healthz`));
+  expect(health.status).toBe(200);
+  expect(await health.json()).toEqual({ status: 'ok' });
+  expect((await h.request(new Request(`${config.publicUrl}/readyz`))).status).toBe(404);
   expect((await h.request(new Request(`${config.publicUrl}/missing`))).status).toBe(404);
   expect((await h.request(new Request(`${config.publicUrl}/donations?all=1`))).status).toBe(400);
 });

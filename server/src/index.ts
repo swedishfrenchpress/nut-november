@@ -35,8 +35,7 @@ try {
   throw error;
 }
 const service = new DonationService(store, coco, config);
-let ready = true;
-const app = createApp(service, config, { ready: () => ready });
+const app = createApp(service, config);
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: 4096,
   fetch(request, server) {
@@ -51,7 +50,6 @@ let stopping = false;
 async function shutdown() {
   if (stopping) return;
   stopping = true;
-  ready = false;
   const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
     await server.stop();

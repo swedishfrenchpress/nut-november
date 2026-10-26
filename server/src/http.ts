@@ -16,7 +16,6 @@ type Env = {
 export function createApp(
   service: DonationService,
   config: Pick<Config, "origins" | "publicUrl">,
-  options: { ready?: () => boolean } = {},
 ) {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
@@ -43,12 +42,7 @@ export function createApp(
   });
   app.notFound((c) => c.json({ error: { code: "not_found", message: "Not found." } }, 404));
   app.get("/healthz", (c) => c.json({ status: "ok" }));
-  app.get("/readyz", (c) => {
-    const ready = options.ready?.() ?? true;
-    return c.json({ ready }, ready ? 200 : 503);
-  });
   app.use("*", async (c, next) => {
-    if (options.ready?.() === false) throw new ApiError(503, "not_ready", "The donation service is starting. Please retry shortly.");
     if (new URL(c.req.url).search) throw new ApiError(400, "query", "Query parameters are not supported.");
     await next();
   });
