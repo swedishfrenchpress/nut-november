@@ -1,23 +1,20 @@
-import { timingSafeEqual, createHash } from "node:crypto";
+import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { createConnection } from "node:net";
+import { dirname } from "node:path";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ApiError } from "./errors.ts";
 import type { WalletOperations } from "./wallet-operations.ts";
 
-const digest = (value: string) => createHash("sha256").update(value).digest();
 const validRequestId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(value);
 
 // This app is never mounted in the public router. Only startWalletAdmin owns
-// its network listener, bound explicitly to the IPv4 loopback address.
-export function createWalletAdminApp(wallet: WalletOperations, token: string) {
+// its filesystem socket. Directory/socket permissions authorize local callers.
+export function createWalletAdminApp(wallet: WalletOperations) {
   const app = new Hono();
-  const authorization = digest(`Bearer ${token}`);
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
     c.header("X-Content-Type-Options", "nosniff");
-    if (!timingSafeEqual(authorization, digest(c.req.header("authorization") ?? ""))) {
-      throw new ApiError(401, "unauthorized", "Wallet operator authentication is required.");
-    }
     if (c.req.header("origin")) throw new ApiError(403, "origin", "Browser requests are not supported.");
     await next();
   });
@@ -49,7 +46,60 @@ export function createWalletAdminApp(wallet: WalletOperations, token: string) {
   return app;
 }
 
-export function startWalletAdmin(wallet: WalletOperations, config: { token: string; port: number }) {
-  const app = createWalletAdminApp(wallet, config.token);
-  return Bun.serve({ hostname: "127.0.0.1", port: config.port, idleTimeout: 120, maxRequestBodySize: 4096, fetch: app.fetch });
+async function removeStaleSocket(path: string, uid: number) {
+  const previous = lstatSync(path, { throwIfNoEntry: false });
+  if (!previous) return;
+  if (!previous.isSocket() || previous.uid !== uid) throw new Error("Wallet socket path must be absent or an owned Unix socket; refusing to replace it");
+  if ((previous.mode & 0o200) === 0) throw new Error("Existing wallet socket lacks owner write permission; refusing to remove it");
+  await new Promise<void>((resolve, reject) => {
+    const connection = createConnection({ path });
+    connection.setTimeout(1000);
+    connection.once("connect", () => {
+      connection.destroy();
+      reject(new Error("Wallet socket is already in use"));
+    });
+    connection.once("error", (error: NodeJS.ErrnoException) => {
+      connection.destroy();
+      // Bun 1.3 reports ENOENT for a socket whose owner exited. The unchanged
+      // socket inode is checked below before deleting either kind of stale entry.
+      if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve();
+      else reject(new Error("Cannot inspect the existing wallet socket; refusing to remove it"));
+    });
+    connection.once("timeout", () => {
+      connection.destroy();
+      reject(new Error("Wallet socket probe timed out; refusing to remove it"));
+    });
+  });
+  const current = lstatSync(path, { throwIfNoEntry: false });
+  if (!current?.isSocket() || current.ino !== previous.ino || current.dev !== previous.dev) {
+    throw new Error("Wallet socket path changed during startup; refusing to remove it");
+  }
+  unlinkSync(path);
+}
+
+export async function startWalletAdmin(wallet: WalletOperations, socketPath: string) {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("Wallet commands require Unix socket filesystem permissions");
+  const directory = dirname(socketPath);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const parent = lstatSync(directory);
+  if (!parent.isDirectory() || parent.uid !== uid || (parent.mode & 0o777) !== 0o700) {
+    throw new Error("Wallet socket directory must be owned by the API user with mode 0700");
+  }
+  await removeStaleSocket(socketPath, uid);
+  const app = createWalletAdminApp(wallet);
+  const server = Bun.serve({
+    unix: socketPath, maxRequestBodySize: 4096,
+    fetch(request, server) {
+      server.timeout(request, 120);
+      return app.fetch(request);
+    },
+  });
+  try {
+    chmodSync(socketPath, 0o600);
+    return server;
+  } catch (error) {
+    await server.stop(true);
+    throw error;
+  }
 }

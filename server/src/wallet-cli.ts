@@ -1,12 +1,13 @@
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { closeSync, fsyncSync, openSync, writeFileSync } from "node:fs";
-import { readWalletAdminConfig } from "./config.ts";
+import { readWalletSocketPath } from "./config.ts";
 import type { WalletBalance, WalletWithdrawal } from "./wallet-operations.ts";
 
 const operatorHelp = `
 Run with bun run wallet:balance or bun run wallet:withdraw.
-Keep the API running. Uses WALLET_ADMIN_TOKEN and WALLET_ADMIN_PORT (3002).
-Connects only to 127.0.0.1; no wallet seed or database access is needed.
+Keep the API running. Connects to DATA_DIR/wallet-admin.sock by default.
+Override with WALLET_SOCKET_PATH. Socket access requires filesystem permission;
+no operator token, TCP port, wallet seed or database access is needed.
 Balance reads local wallet state without mint requests. Withdraw prints only
 the token to stdout, or saves a new file with mode 0600. Progress goes to stderr.
 After interruption, resume the printed request or operation ID; do not create a new withdrawal.`;
@@ -69,23 +70,18 @@ function parseCommand(args: string[], io: CliOutput): WalletCommand | undefined 
   return selected;
 }
 
-async function walletRequest(config: { token: string; port: number }, path: string, body?: object) {
-  // Bun 1.3's fetch (including node:http) inherits environment proxies.
-  // Preserve existing bypasses and add only our fixed local destination.
-  for (const name of ["NO_PROXY", "no_proxy"]) {
-    const hosts = (process.env[name] ?? "").split(",").filter(Boolean);
-    if (!hosts.includes("127.0.0.1")) process.env[name] = [...hosts, "127.0.0.1"].join(",");
-  }
+async function walletRequest(socketPath: string, path: string, body?: object) {
   let response: Response;
   try {
-    response = await fetch(`http://127.0.0.1:${config.port}${path}`, {
+    response = await fetch(`http://wallet${path}`, {
+      unix: socketPath,
       method: body === undefined ? "GET" : "POST", redirect: "error", cache: "no-store",
       signal: AbortSignal.timeout(120_000),
-      headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new WalletCliError("Cannot reach the private wallet listener. Check that the API is running and WALLET_ADMIN_PORT is correct. Resume the same request after a timeout; do not create another payment.");
+    throw new WalletCliError("Cannot reach the private wallet socket. Check that the API is running, WALLET_SOCKET_PATH matches, and your user has socket access. Resume the same request after a timeout; do not create another payment.");
   }
   let value;
   try { value = await response.json(); }
@@ -105,12 +101,11 @@ export async function runWalletCli(
   process.umask(0o077);
   let output: number | undefined;
   try {
-    let config;
-    try { config = readWalletAdminConfig(env); }
-    catch { throw new WalletCliError("Invalid WALLET_ADMIN_TOKEN or WALLET_ADMIN_PORT configuration."); }
-    if (!config) throw new WalletCliError("Set WALLET_ADMIN_TOKEN to the API's operator credential.");
+    let socketPath;
+    try { socketPath = readWalletSocketPath(env); }
+    catch { throw new WalletCliError("Invalid WALLET_SOCKET_PATH configuration; use a short filesystem path."); }
     if (command.type === "balance") {
-      const balance: WalletBalance = await walletRequest(config, "/balance");
+      const balance: WalletBalance = await walletRequest(socketPath, "/balance");
       if (!Number.isSafeInteger(balance?.spendableSats) || !Array.isArray(balance.withdrawals)) {
         throw new WalletCliError("Invalid balance response from the private wallet listener.");
       }
@@ -124,15 +119,15 @@ export async function runWalletCli(
     let withdrawal: WalletWithdrawal;
     if (command.operationId) {
       io.err(`Resuming withdrawal operation ${command.operationId}.`);
-      withdrawal = await walletRequest(config, `/withdrawals/${encodeURIComponent(command.operationId)}`, {});
+      withdrawal = await walletRequest(socketPath, `/withdrawals/${encodeURIComponent(command.operationId)}`, {});
     } else if (command.requestId) {
       io.err(`Resuming withdrawal request ${command.requestId}.`);
-      withdrawal = await walletRequest(config, `/withdrawals/requests/${encodeURIComponent(command.requestId)}`, {});
+      withdrawal = await walletRequest(socketPath, `/withdrawals/requests/${encodeURIComponent(command.requestId)}`, {});
     } else {
       const requestId = crypto.randomUUID();
       // Print before sending: even a lost first response has a stable retry ID.
       io.err(`Withdrawal request ${requestId}: ${command.amount} sats. Resume with wallet:withdraw --request ${requestId}`);
-      withdrawal = await walletRequest(config, "/withdrawals", { requestId, amountSats: command.amount });
+      withdrawal = await walletRequest(socketPath, "/withdrawals", { requestId, amountSats: command.amount });
     }
     if (typeof withdrawal?.token !== "string" || !withdrawal.token.startsWith("cashu") || typeof withdrawal.id !== "string") {
       throw new WalletCliError("Invalid withdrawal response. Resume the same request or operation; do not create another payment.");

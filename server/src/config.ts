@@ -1,14 +1,14 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 export const MINT_URL = "https://mint.minibits.cash/Bitcoin";
 
-export function readWalletAdminConfig(env: Record<string, string | undefined> = process.env) {
-  const token = env.WALLET_ADMIN_TOKEN;
-  if (token === undefined || token === "") return null;
-  if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error("WALLET_ADMIN_TOKEN must contain 32–256 URL-safe characters");
-  const port = Number(env.WALLET_ADMIN_PORT ?? 3002);
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid WALLET_ADMIN_PORT");
-  return { token, port };
+export function readWalletSocketPath(env: Record<string, string | undefined> = process.env) {
+  const path = env.WALLET_SOCKET_PATH ?? join(env.DATA_DIR ?? "./data", "wallet-admin.sock");
+  if (!path.trim() || path.includes("\0")) throw new Error("Invalid WALLET_SOCKET_PATH");
+  const absolute = resolve(path);
+  // Linux sockaddr_un.sun_path has 108 bytes, including its trailing null.
+  if (Buffer.byteLength(absolute) > 107) throw new Error("WALLET_SOCKET_PATH exceeds the Unix socket path limit");
+  return absolute;
 }
 
 export function readConfig(env: Record<string, string | undefined> = process.env) {
@@ -35,13 +35,11 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     throw new Error("CORS_ORIGINS must contain exact origins");
   }
   const port = integer("PORT", 3001, 1, 65535);
-  const walletAdmin = readWalletAdminConfig(env);
-  if (walletAdmin?.port === port) throw new Error("WALLET_ADMIN_PORT must differ from PORT");
   return {
     seed: Buffer.from(seedHex, "hex"),
     dataDir: resolve(env.DATA_DIR ?? "./data"),
     port,
-    walletAdmin,
+    walletSocketPath: readWalletSocketPath(env),
     publicUrl: publicUrl.origin,
     origins,
     maxPending: integer("MAX_PENDING_DONATIONS", 1000, 1, 100_000),

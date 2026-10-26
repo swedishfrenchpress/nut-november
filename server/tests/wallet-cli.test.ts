@@ -2,12 +2,12 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { getDecodedToken, initializeCoco, type Manager } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWalletCli } from "../src/wallet-cli.ts";
 import { acquireWalletLock } from "../src/wallet-lock.ts";
-import { MINT_URL, readConfig, readWalletAdminConfig } from "../src/config.ts";
+import { MINT_URL, readConfig, readWalletSocketPath } from "../src/config.ts";
 import { AppStore } from "../src/store.ts";
 import { sha256 } from "../src/identity.ts";
 import { cashuPostTransport } from "../src/cashu.ts";
@@ -20,7 +20,6 @@ import { TestMint } from "./helpers/mint.ts";
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const seed = Buffer.alloc(64, 7);
-const token = "test-wallet-operator-credential-123456789";
 const donationConfig = { publicUrl: "https://api.example", maxPending: 1000, origins: ["https://example.com"] };
 
 async function harness(amount = 64) {
@@ -31,7 +30,7 @@ async function harness(amount = 64) {
   const network = spyOn(globalThis, "fetch").mockImplementation((async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(`${MINT_URL}/`)) return mint.fetch(input, init);
-    if (url.startsWith("http://127.0.0.1:")) return originalFetch(input, init);
+    if (init && "unix" in init && init.unix) return originalFetch(input, init);
     throw new Error("Unexpected test network request");
   }) as typeof fetch);
   cleanups.push(() => { network.mockRestore(); });
@@ -40,7 +39,8 @@ async function harness(amount = 64) {
   let store: AppStore;
   let service: DonationService;
   let wallet: WalletOperations;
-  let listener: ReturnType<typeof startWalletAdmin>;
+  let listener: Awaited<ReturnType<typeof startWalletAdmin>>;
+  const socketPath = join(directory, "wallet-admin.sock");
   let releaseLock: () => void;
   async function open() {
     releaseLock = acquireWalletLock(directory);
@@ -57,7 +57,7 @@ async function harness(amount = 64) {
     service = new DonationService(store, coco, donationConfig);
     await service.start();
     wallet = new WalletOperations(coco, store);
-    listener = startWalletAdmin(wallet, { token, port: 0 });
+    listener = await startWalletAdmin(wallet, socketPath);
   }
   async function close() {
     await listener?.stop(true);
@@ -74,19 +74,20 @@ async function harness(amount = 64) {
     return payment;
   }
   if (amount) await donate(amount);
-  const env = () => ({ WALLET_ADMIN_TOKEN: token, WALLET_ADMIN_PORT: String(listener.port) });
+  const env = () => ({ WALLET_SOCKET_PATH: socketPath });
   async function command(args: string[], extraEnv = {}) {
     const out: string[] = [], err: string[] = [];
     await runWalletCli(args, { ...env(), ...extraEnv }, { out: (value) => { out.push(value); }, err: (value) => { err.push(value); } });
     return { out, err };
   }
   async function request(path: string, body?: object, headers: Record<string, string> = {}) {
-    return originalFetch(`http://127.0.0.1:${listener.port}${path}`, {
-      method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
+    return originalFetch(`http://wallet${path}`, {
+      unix: socketPath,
+      method: body === undefined ? "GET" : "POST", headers: { "Content-Type": "application/json", ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   }
-  return { directory, mint, command, donate, request, env,
+  return { directory, socketPath, mint, command, donate, request, env,
     get listener() { return listener; }, get wallet() { return wallet; }, get coco() { return coco; }, get store() { return store; },
     get service() { return service; },
     async balance() { return JSON.parse((await command(["balance"])).out[0]); },
@@ -107,12 +108,13 @@ test("CLI reads the running owner's balance without a seed, database access, min
   expect(JSON.parse(result.out[0])).toEqual({ mint: MINT_URL, unit: "sat", spendableSats: 0, reservedSats: 64, totalSats: 64,
     withdrawals: [{ id: prepared.id, state: "prepared", amountSats: 21, feeSats: 0, requestId: null }], unresolvedRequests: [] });
   expect(result.out.join("")).not.toContain(prepared.inputProofSecrets[0]);
-  expect(result.out.join("")).not.toContain(token);
   expect(result.err).toEqual([]);
-  expect(h.listener.hostname).toBe("127.0.0.1");
+  expect(lstatSync(h.socketPath).isSocket()).toBe(true);
+  expect(statSync(h.socketPath).mode & 0o777).toBe(0o600);
+  expect(statSync(h.directory).mode & 0o777).toBe(0o700);
   expect(() => acquireWalletLock(h.directory)).toThrow("another API process");
   const duplicate = Bun.spawn([process.execPath, new URL("../src/index.ts", import.meta.url).pathname], {
-    env: { ...process.env, DATA_DIR: h.directory, COCO_SEED_HEX: seed.toString("hex"), WALLET_ADMIN_TOKEN: "" }, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, DATA_DIR: h.directory, COCO_SEED_HEX: seed.toString("hex") }, stdout: "pipe", stderr: "pipe",
   });
   expect(await duplicate.exited).toBe(1);
   expect(await new Response(duplicate.stderr).text()).toContain("another API process");
@@ -247,13 +249,11 @@ test("lost mint swap responses restore funds without exporting a token or automa
   expect(await h.balance()).toMatchObject({ spendableSats: 64, withdrawals: [] });
 });
 
-test("the private listener authenticates all routes, denies browser origins, bounds bodies and never logs bearer errors", async () => {
+test("the private socket needs no bearer credential, denies browser origins, bounds bodies and never logs bearer errors", async () => {
   const h = await harness();
-  for (const authorization of ["", "Bearer wrong", `Bearer ${token}extra`]) {
-    const response = await h.request("/withdrawals", { requestId: crypto.randomUUID(), amountSats: 21 }, { Authorization: authorization });
-    expect(response.status).toBe(401);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-  }
+  const balance = await h.request("/balance");
+  expect(balance.status).toBe(200);
+  expect(balance.headers.get("Cache-Control")).toBe("no-store");
   expect((await h.request("/balance", undefined, { Origin: "https://example.com" })).status).toBe(403);
   expect((await h.request("/withdrawals", { requestId: crypto.randomUUID(), amountSats: 21 }, { Origin: "null" })).status).toBe(403);
   expect((await h.request("/withdrawals", { padding: "x".repeat(5000) })).status).toBe(413);
@@ -273,11 +273,11 @@ test("the private listener authenticates all routes, denies browser origins, bou
   expect(h.store.listWithdrawalRequests()).toEqual([]);
 });
 
-test("public routes never expose private wallet commands, even with the operator credential", async () => {
+test("public routes never expose private wallet commands", async () => {
   const h = await harness();
   const app = createApp(h.service, h.store, donationConfig);
   for (const path of ["/balance", "/withdrawals", "/withdrawals/requests/id", "/withdrawals/id"]) {
-    const response = await app.request(`https://api.example${path}`, { method: path === "/balance" ? "GET" : "POST", headers: { Authorization: `Bearer ${token}` } }, { clientIp: "operator" });
+    const response = await app.request(`https://api.example${path}`, { method: path === "/balance" ? "GET" : "POST" }, { clientIp: "operator" });
     expect(response.status).toBe(404);
   }
 });
@@ -335,14 +335,83 @@ test("help and usage errors need no server or wallet environment", async () => {
   }
 });
 
-test("operator listener is opt-in, config rejects weak credentials and public port collisions, and CLI needs only operator config", async () => {
-  expect(readWalletAdminConfig({})).toBeNull();
-  const env = { COCO_SEED_HEX: seed.toString("hex") };
-  expect(readConfig(env).walletAdmin).toBeNull();
-  expect(() => readConfig({ ...env, WALLET_ADMIN_TOKEN: "short" })).toThrow("WALLET_ADMIN_TOKEN");
-  expect(() => readConfig({ ...env, WALLET_ADMIN_TOKEN: token, WALLET_ADMIN_PORT: "3001" })).toThrow("must differ");
-  expect(() => readWalletAdminConfig({ WALLET_ADMIN_TOKEN: token, WALLET_ADMIN_PORT: "0" })).toThrow("WALLET_ADMIN_PORT");
-  await expect(runWalletCli(["balance"], {})).rejects.toThrow("Set WALLET_ADMIN_TOKEN");
+test("socket configuration defaults to DATA_DIR and rejects invalid or overlong Unix paths", async () => {
+  expect(readWalletSocketPath({ DATA_DIR: "/data" })).toBe("/data/wallet-admin.sock");
+  expect(readConfig({ COCO_SEED_HEX: seed.toString("hex"), DATA_DIR: "/data" }).walletSocketPath).toBe("/data/wallet-admin.sock");
+  expect(readWalletSocketPath({ WALLET_SOCKET_PATH: "/run/private/wallet.sock" })).toBe("/run/private/wallet.sock");
+  for (const path of ["", "\0abstract", "/" + "x".repeat(108)]) {
+    expect(() => readWalletSocketPath({ WALLET_SOCKET_PATH: path })).toThrow("WALLET_SOCKET_PATH");
+  }
+  await expect(runWalletCli(["balance"], { WALLET_SOCKET_PATH: "" })).rejects.toThrow("Invalid WALLET_SOCKET_PATH");
+  const directory = mkdtempSync(join(tmpdir(), "nut-missing-socket-"));
+  try {
+    await expect(runWalletCli(["balance"], { WALLET_SOCKET_PATH: join(directory, "absent.sock") })).rejects.toThrow("Cannot reach the private wallet socket");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("socket startup preserves live listeners, regular files and symlinks and rejects shared directories", async () => {
+  const h = await harness();
+  const inode = lstatSync(h.socketPath).ino;
+  await expect(startWalletAdmin(h.wallet, h.socketPath)).rejects.toThrow("already in use");
+  expect(lstatSync(h.socketPath).ino).toBe(inode);
+  expect((await h.balance()).spendableSats).toBe(64);
+  chmodSync(h.socketPath, 0o400);
+  try {
+    await expect(startWalletAdmin(h.wallet, h.socketPath)).rejects.toThrow("owner write permission");
+    expect(lstatSync(h.socketPath).ino).toBe(inode);
+  } finally { chmodSync(h.socketPath, 0o600); }
+  const file = join(h.directory, "keep.txt");
+  writeFileSync(file, "keep");
+  await expect(startWalletAdmin(h.wallet, file)).rejects.toThrow("refusing to replace");
+  expect(readFileSync(file, "utf8")).toBe("keep");
+  const link = join(h.directory, "link.sock");
+  symlinkSync(file, link);
+  await expect(startWalletAdmin(h.wallet, link)).rejects.toThrow("refusing to replace");
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  const shared = join(h.directory, "shared");
+  mkdirSync(shared);
+  chmodSync(shared, 0o755);
+  await expect(startWalletAdmin(h.wallet, join(shared, "admin.sock"))).rejects.toThrow("mode 0700");
+  expect(statSync(shared).mode & 0o777).toBe(0o755);
+});
+
+test("startup recovers a Unix socket left by SIGKILL and graceful shutdown removes the replacement", async () => {
+  const h = await harness();
+  const path = join(h.directory, "crashed.sock");
+  const owner = Bun.spawn([process.execPath, "-e", 'Bun.serve({ unix: process.argv[1], fetch: () => new Response("old") }); console.log("listening");', path], { stdout: "pipe", stderr: "pipe" });
+  cleanups.push(() => { owner.kill(); });
+  const reader = owner.stdout.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("listening");
+  owner.kill("SIGKILL");
+  await owner.exited;
+  expect(lstatSync(path).isSocket()).toBe(true);
+  const listener = await startWalletAdmin(h.wallet, path);
+  try {
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const response = await fetch("http://wallet/balance", { unix: path });
+    expect(response.status).toBe(200);
+    expect((await response.json()).spendableSats).toBe(64);
+  } finally { await listener.stop(true); }
+  expect(existsSync(path)).toBe(false);
+});
+
+test.skipIf(process.getuid?.() !== 0 || !Bun.which("python3"))("socket mode denies another Unix user even when its directory is traversable", async () => {
+  const h = await harness();
+  const directory = mkdtempSync(join(tmpdir(), "nut-socket-permission-"));
+  const path = join(directory, "admin.sock");
+  const listener = await startWalletAdmin(h.wallet, path);
+  try {
+    // No wallet files live here. Allow traversal to test the socket's own mode.
+    chmodSync(directory, 0o711);
+    const script = 'import os,socket,sys\nos.setgid(65534)\nos.setuid(65534)\ns=socket.socket(socket.AF_UNIX)\ntry:\n s.connect(sys.argv[1])\nexcept PermissionError:\n sys.exit(0)\nelse:\n sys.exit(1)';
+    const otherUser = Bun.spawn([Bun.which("python3")!, "-c", script, path], { cwd: "/tmp", stdout: "pipe", stderr: "pipe" });
+    const code = await otherUser.exited;
+    expect({ code, error: await new Response(otherUser.stderr).text() }).toEqual({ code: 0, error: "" });
+  } finally {
+    chmodSync(directory, 0o700);
+    await listener.stop(true);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("root CLI scripts use the running listener, emit JSON and return a single usage error on invalid withdrawals", async () => {
@@ -355,6 +424,11 @@ test("root CLI scripts use the running listener, emit JSON and return a single u
   const balanceError = await new Response(balance.stderr).text();
   expect({ code: balanceCode, error: balanceCode === 0 ? "" : balanceError }).toEqual({ code: 0, error: "" });
   expect(JSON.parse(await new Response(balance.stdout).text())).toMatchObject({ spendableSats: 64, withdrawals: [] });
+  const defaultEnv: NodeJS.ProcessEnv = { ...env, DATA_DIR: h.directory };
+  delete defaultEnv.WALLET_SOCKET_PATH;
+  const defaultPath = Bun.spawn([process.execPath, "run", "wallet:balance"], { cwd, env: defaultEnv, stdout: "pipe", stderr: "pipe" });
+  expect(await defaultPath.exited).toBe(0);
+  expect(JSON.parse(await new Response(defaultPath.stdout).text()).spendableSats).toBe(64);
   const invalid = Bun.spawn([process.execPath, "run", "wallet:withdraw", "--", "0"], { cwd, env, stdout: "pipe", stderr: "pipe" });
   expect(await invalid.exited).toBe(1);
   expect(await new Response(invalid.stdout).text()).toBe("");

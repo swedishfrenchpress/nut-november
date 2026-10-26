@@ -46,7 +46,7 @@ try {
 }
 const app = createApp(service, store, config);
 const wallet = new WalletOperations(coco, store);
-const adminServer = config.walletAdmin ? startWalletAdmin(wallet, config.walletAdmin) : undefined;
+const adminServer = await startWalletAdmin(wallet, config.walletSocketPath);
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: Math.max(SUBMISSION_MAX_BODY_BYTES, CASHU_BODY_LIMIT),
   fetch(request, server) {
@@ -63,7 +63,7 @@ async function shutdown() {
   stopping = true;
   const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
-    await Promise.all([server.stop(), adminServer?.stop()]);
+    await Promise.all([server.stop(), adminServer.stop()]);
     await Promise.all([service.drain(), wallet.drain()]);
     await coco.dispose();
     service.stop();

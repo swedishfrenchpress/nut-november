@@ -161,18 +161,30 @@ Alert on sustained `paid` or `review` operations, rising pending quote counts, f
 
 ### Wallet balance and Cashu withdrawals
 
-Keep the API running. Its existing Coco manager owns all wallet operations, recovery and watchers. The Commander CLI is an HTTP client; it needs neither `COCO_SEED_HEX` nor database access.
+Keep the API running. Its existing Coco manager owns all wallet operations, recovery and watchers. The Commander CLI sends HTTP over a private filesystem Unix socket; it needs neither `COCO_SEED_HEX` nor database access.
 
-Set `WALLET_ADMIN_TOKEN` to a separate random operator credential (32–256 URL-safe characters) in the API environment and restart once to enable the listener. For example, generate a credential privately with `openssl rand -hex 32`, then store it securely. Unset/empty disables the listener. `WALLET_ADMIN_PORT` defaults to `3002` and must differ from the public `PORT`. The bind address is fixed to `127.0.0.1`; this is a separate Hono app, never mounted in the public router or exposed through the Fly HTTP service. All private routes require `Authorization: Bearer <operator credential>`, reject browser origins and return `Cache-Control: no-store`.
+The server creates `DATA_DIR/wallet-admin.sock` automatically, with mode `0600` inside its private `0700` data directory (`/data/wallet-admin.sock` on Fly). There is no wallet TCP listener or bearer credential. The operating system grants access to the API's Unix user and sufficiently privileged root processes; this does not isolate the wallet from code already running with those privileges. Private routes remain separate from the public router, reject browser origins and return `Cache-Control: no-store`.
 
-Run the CLI in the same machine/container network namespace, with the matching `WALLET_ADMIN_TOKEN` and optional `WALLET_ADMIN_PORT` in its environment. On Fly, run it inside the API machine through your private shell; the local CLI always connects to `127.0.0.1`, bypasses environment proxies for that address, and never follows redirects. These scripts work from the repository root or `server/`:
+Both server and CLI derive the path from `DATA_DIR` (default `./data`). Optionally set `WALLET_SOCKET_PATH` to the same filesystem path in both environments. A custom socket directory must belong to the API user with mode `0700`; startup refuses shared directories instead of changing their permissions. The absolute path must fit Linux's 107-byte Unix socket pathname limit. The CLI never follows redirects, and Unix socket requests do not use environment proxies.
+
+Startup refuses to replace a live socket, a regular file, a symlink, or a socket owned by another Unix user. It probes an owned abandoned socket and checks its inode again before removing it. Graceful shutdown removes the socket; after a crash, the next server start recovers it. The wallet owner lock is acquired before this cleanup. Keep the socket directory private and do not remove socket files from a running server.
+
+Run the CLI as the API user or root, with access to the same filesystem socket. These scripts work from the repository root or `server/`:
 
 ```sh
 bun run wallet:balance
 bun run wallet:withdraw 2100 --output /secure/prize.cashu
 ```
 
-Add `--help` to either command for generated usage and option descriptions. Keep a current backup before payout, and keep the operator credential and bearer tokens out of logs, source control and support tickets.
+On Fly, after deploying this version, run the CLI inside the existing API machine; no secret setup or port exposure is needed:
+
+```sh
+fly ssh console -a nut-november-api -C "bun /app/server/src/wallet-cli.ts balance"
+fly ssh console -a nut-november-api -C "bun /app/server/src/wallet-cli.ts withdraw 2100 --output /data/prize-2100.cashu"
+fly ssh sftp get -a nut-november-api /data/prize-2100.cashu ./prize-2100.cashu
+```
+
+Add `--help` to either command for generated usage and option descriptions. Keep a current backup before payout, and keep bearer tokens out of logs, source control and support tickets.
 
 `wallet:balance` prints JSON with the mint, unit, `spendableSats`, `reservedSats`, `totalSats`, prepared/pending `withdrawals` (operation ID, request ID, state, amount and fee), and `unresolvedRequests` whose operation association is uncertain. Reading balance makes no mint requests. `totalSats` is spendable plus reserved ready proofs; outgoing tokens are listed separately and may already have been claimed since the last mint check. Payouts do not reduce the historical donation total.
 
@@ -190,7 +202,7 @@ A prepared operation executes once; a pending operation is refreshed and its per
 
 There is no transaction spanning app and Coco databases. A crash between preparing a send and saving its association leaves an unresolved request. Repeating that request fails closed instead of preparing another send. `wallet:balance` shows the unresolved request and any prepared operation for private inspection and recovery by operation ID. Never start another withdrawal merely to retry lost output. Coco startup recovery runs only with server startup; an operation left executing can require a server restart and inspection.
 
-Private HTTP contract:
+Private HTTP contract over the Unix socket:
 
 | Route | Behavior |
 | --- | --- |
