@@ -1,6 +1,5 @@
 import type { Plugin } from "@cashu/coco-core/plugin";
 import { ApiError } from "./errors.ts";
-import { MINT_URL } from "./config.ts";
 
 export const CASHU_BODY_LIMIT = 128 * 1024;
 export const CASHU_PROOF_LIMIT = 128;
@@ -22,25 +21,21 @@ export function cashuPostTransport(): Plugin<["paymentRequestReceiveService"]> {
   };
 }
 
-export function validateCashuPayload(value: unknown, requestId: string, amountSats: number): void {
+// Coco owns payment validation. Keep only our HTTP input bounds and exact-amount
+// policy; the string checks prevent malformed JSON from reaching hashing/storage.
+export function validateCashuPaymentLimits(value: unknown, amountSats: number): void {
   const invalid = () => new ApiError(400, "invalid_payment", "Invalid Cashu payment payload.");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
   const payload = value as Record<string, unknown>;
-  if (payload.id !== requestId || payload.mint !== MINT_URL || payload.unit !== "sat"
-    || (payload.memo !== undefined && (typeof payload.memo !== "string" || payload.memo.length > 280))
+  if ((payload.memo !== undefined && typeof payload.memo !== "string")
     || !Array.isArray(payload.proofs) || payload.proofs.length === 0 || payload.proofs.length > CASHU_PROOF_LIMIT) throw invalid();
 
   let total = 0;
-  const secrets = new Set<string>();
   for (const value of payload.proofs) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
     const proof = value as Record<string, unknown>;
     if (!Number.isSafeInteger(proof.amount) || (proof.amount as number) <= 0
-      || typeof proof.id !== "string" || !/^(?:00[0-9a-f]{14}|01[0-9a-f]{64})$/i.test(proof.id)
-      || typeof proof.C !== "string" || !/^0[23][0-9a-f]{64}$/i.test(proof.C)
-      || typeof proof.secret !== "string" || proof.secret.length === 0 || proof.secret.length > 2048
-      || secrets.has(proof.secret)) throw invalid();
-    secrets.add(proof.secret);
+      || typeof proof.secret !== "string") throw invalid();
     total += proof.amount as number;
     if (!Number.isSafeInteger(total)) throw invalid();
   }

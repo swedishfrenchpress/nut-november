@@ -88,28 +88,93 @@ test("creates a persistent NUT-18 HTTP request and receives real proofs through 
   expect((await h.deliver(requestId, payload)).status).toBe(200);
   expect(h.mint.swaps).toBe(1);
   expect((await h.service.feed()).donationTotal).toBe(1001);
+  expect((await h.deliver(requestId, h.mint.payload(requestId, 1001))).status).toBe(409);
+  expect(h.mint.swaps).toBe(1);
   await h.restart();
   expect((await h.service.get(payment.id)).status).toBe("confirmed");
   expect((await h.deliver(requestId, payload)).status).toBe(200);
   expect(h.mint.swaps).toBe(1);
 });
 
-test("rejects wrong IDs, mints, units, amounts and malformed proofs before contacting the mint", async () => {
+test("enforces HTTP input bounds and exact donation amounts before calling Coco", async () => {
   const h = await harness();
   const { payment, requestId, payload } = await h.create();
+  const claims = spyOn(h.coco.paymentRequests.incoming, "claimPayload");
   const requests = h.mint.requests;
-  const invalid = [null, [], {}, { ...payload, id: "other" }, { ...payload, mint: "http://127.0.0.1/private" },
-    { ...payload, unit: "usd" }, { ...payload, proofs: [] }, h.mint.payload(requestId, 20), h.mint.payload(requestId, 22),
-    { ...payload, proofs: [{ ...payload.proofs[0], amount: Number.MAX_SAFE_INTEGER + 1 }] },
-    { ...payload, proofs: [{ ...payload.proofs[0], secret: "" }] },
-    { ...payload, proofs: [{ ...payload.proofs[0], C: "bad" }] },
+  const invalidProof = (fields: Record<string, unknown>) => ({
+    ...payload, proofs: payload.proofs.map((proof, i) => i === 0 ? { ...proof, ...fields } : proof),
+  });
+  const invalid = [null, [], {}, { ...payload, memo: {} }, { ...payload, proofs: [] },
+    h.mint.payload(requestId, 20), h.mint.payload(requestId, 22),
+    invalidProof({ amount: Number.MAX_SAFE_INTEGER + 1 }), invalidProof({ amount: "1" }),
+    invalidProof({ amount: 0 }), invalidProof({ amount: -1 }), invalidProof({ amount: 0.5 }),
+    invalidProof({ secret: undefined }), invalidProof({ secret: {} }),
+    { ...payload, proofs: [null] },
     { ...payload, proofs: Array(129).fill(payload.proofs[0]) },
-    { ...payload, proofs: [payload.proofs[0], payload.proofs[0]] }];
+    { ...payload, proofs: [{ ...payload.proofs[0], amount: Number.MAX_SAFE_INTEGER }, payload.proofs[0]] }];
   for (const value of invalid) expect((await h.deliver(requestId, value)).status).toBe(400);
+  expect(claims).not.toHaveBeenCalled();
+  claims.mockRestore();
   expect(h.mint.requests).toBe(requests);
   expect((await h.service.get(payment.id)).status).toBe("pending");
   expect((await h.deliver("unknown", payload)).status).toBe(404);
   expect((await h.deliver(requestId, payload)).status).toBe(200);
+});
+
+test("delegates request and proof validation to Coco without putting malformed input under review", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create();
+  const claims = spyOn(h.coco.paymentRequests.incoming, "claimPayload");
+  const invalid = [{ ...payload, id: "other" }, { ...payload, id: undefined },
+    { ...payload, mint: "http://127.0.0.1/private" }, { ...payload, mint: "invalid URL" },
+    { ...payload, mint: undefined }, { ...payload, unit: "usd" }, { ...payload, unit: " " },
+    { ...payload, unit: undefined },
+    { ...payload, proofs: payload.proofs.map((proof) => ({ ...proof, id: undefined })) },
+    { ...payload, proofs: payload.proofs.map((proof) => ({ ...proof, C: undefined })) },
+    { ...payload, proofs: payload.proofs.map((proof) => ({ ...proof, C: "bad" })) },
+    { ...payload, proofs: payload.proofs.map((proof) => ({ ...proof, secret: "" })) }];
+  for (const value of invalid) {
+    expect((await h.deliver(requestId, value)).status).toBe(400);
+    expect((await h.service.get(payment.id)).status).toBe("pending");
+  }
+  expect(claims).toHaveBeenCalledTimes(invalid.length);
+  claims.mockRestore();
+  expect(h.mint.swaps).toBe(0);
+  expect((await h.deliver(requestId, payload)).status).toBe(200);
+});
+
+test("lets Coco normalize mint URLs and accepts valid long secrets and payer memos", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create(1001);
+  const memo = "m".repeat(281);
+  const proofs = payload.proofs.map((proof, i) => h.mint.proof(proof.amount, `${"s".repeat(2049)}-${i}`));
+  expect((await h.deliver(requestId, { ...payload, mint: `${MINT_URL}/`, proofs, memo })).status).toBe(200);
+  expect((await h.service.get(payment.id)).status).toBe("confirmed");
+  expect((await h.service.feed()).donations[0]!.content).toBe("Go nuts");
+});
+
+test("duplicate secrets with the exact requested amount are rejected through Coco and the mint", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create(2);
+  const claims = spyOn(h.coco.paymentRequests.incoming, "claimPayload");
+  const proof = h.mint.proof(1);
+  expect((await h.deliver(requestId, { ...payload, proofs: [proof, proof] })).status).toBe(400);
+  expect(claims).toHaveBeenCalledTimes(1);
+  claims.mockRestore();
+  expect((await h.service.get(payment.id)).status).toBe("pending");
+  expect(h.mint.swaps).toBe(0);
+  expect((await h.deliver(requestId, payload)).status).toBe(200);
+});
+
+test("unclassified Coco keyset errors stay unresolved and a corrected claim can succeed", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create();
+  const proofs = payload.proofs.map((proof) => ({ ...proof, id: "bad" }));
+  expect((await h.deliver(requestId, { ...payload, proofs })).status).toBe(503);
+  expect((await h.service.get(payment.id)).status).toBe("review");
+  expect(h.mint.swaps).toBe(0);
+  expect((await h.deliver(requestId, payload)).status).toBe(200);
+  expect((await h.service.get(payment.id)).status).toBe("confirmed");
 });
 
 test("spent or forged proofs never confirm another donation and a rejected claim can be retried with fresh proofs", async () => {

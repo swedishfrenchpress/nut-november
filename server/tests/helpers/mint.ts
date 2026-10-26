@@ -18,8 +18,7 @@ export class TestMint {
   loseSwapResponse = false;
   beforeSwap?: () => Promise<void>;
 
-  proof(amount: number): Proof {
-    const secret = crypto.randomUUID();
+  proof(amount: number, secret: string = crypto.randomUUID()): Proof {
     return { amount, secret, id: this.id, C: hashToCurve(new TextEncoder().encode(secret)).toHex(true) };
   }
 
@@ -57,6 +56,9 @@ export class TestMint {
       await this.beforeSwap?.();
       if (this.unavailable) throw new TypeError("Test mint unavailable");
       const inputs = body.inputs as Proof[];
+      if (new Set(inputs.map((proof) => proof.secret)).size !== inputs.length) {
+        return Response.json({ code: 11007, detail: "Duplicate inputs" }, { status: 400 });
+      }
       for (const proof of inputs) {
         const Y = hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true);
         if (this.spent.has(Y)) return Response.json({ code: 11001, detail: "Token already spent" }, { status: 400 });

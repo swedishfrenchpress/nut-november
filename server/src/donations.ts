@@ -1,4 +1,4 @@
-import { OperationInProgressError, PaymentRequestError, type CoreEvents, type Manager, type MintOperation, type MintQuote, type PaymentRequestReceiveOperation, type ReceiveOperation } from "@cashu/coco-core";
+import { OperationInProgressError, PaymentRequestError, UnitValidationError, type CoreEvents, type Manager, type MintOperation, type MintQuote, type PaymentRequestReceiveOperation, type ReceiveOperation } from "@cashu/coco-core";
 import {
   canIncludeDonationMessage,
   donationAmountHint,
@@ -18,7 +18,7 @@ import { ApiError } from "./errors.ts";
 import type { DonationRow } from "./schema.ts";
 import { AppStore } from "./store.ts";
 import { MINT_URL, type Config } from "./config.ts";
-import { CASHU_CONCURRENCY_LIMIT, validateCashuPayload } from "./cashu.ts";
+import { CASHU_CONCURRENCY_LIMIT, validateCashuPaymentLimits } from "./cashu.ts";
 
 type PreparedOperation = Exclude<MintOperation, { state: "init" }>;
 
@@ -214,7 +214,7 @@ export class DonationService {
     const row = this.store.getByCashuRequestId(requestId);
     if (!row || row.paymentMethod !== "cashu") throw new ApiError(404, "not_found", "Donation not found.");
     const op = await this.cashuOperation(row);
-    validateCashuPayload(value, requestId, op.amount.toNumber());
+    validateCashuPaymentLimits(value, op.amount.toNumber());
     if (this.receivingCashu.has(op.id)) {
       throw new ApiError(409, "payment_processing", "Payment is being collected. Retry the same payment; do not pay again.");
     }
@@ -236,7 +236,16 @@ export class DonationService {
     } catch (error) {
       if (error instanceof ApiError) throw error;
       if (error instanceof PaymentRequestError) {
+        if (op.state === "active") {
+          throw new ApiError(400, "invalid_payment", "Invalid Cashu payment payload.");
+        }
         throw new ApiError(409, "payment_conflict", "This payment cannot be accepted for the donation.");
+      }
+      // Coco's URL/unit parsers can throw before creating a payment attempt.
+      // Do not treat arbitrary TypeErrors as bad input: fetch also throws them.
+      if (error instanceof UnitValidationError
+        || (error instanceof TypeError && "code" in error && error.code === "ERR_INVALID_URL")) {
+        throw new ApiError(400, "invalid_payment", "Invalid Cashu payment payload.");
       }
       this.uncertainCashu.add(op.id);
       // Coco may have recovered and finalized even though execute threw.
