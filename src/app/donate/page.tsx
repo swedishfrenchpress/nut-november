@@ -18,10 +18,10 @@ import {
   DONATION_MESSAGE_THRESHOLD,
 } from "../lib/donationMessages";
 import SuccessMessage from "./components/SuccessMessage";
-import InvoiceDisplay from "./components/InvoiceDisplay";
+import PaymentDisplay from "./components/PaymentDisplay";
 import { useDonationPayment } from "./hooks/useDonationPayment";
 import { createDonation, getDonationLimits, signDonationRequest } from "../lib/donationApi";
-import { donationAmountHint, isDonationAmount, type DonationLimits, type DonationPayment, type DonationRequest } from "../../../shared/donations";
+import { CASHU_DONATION_LIMITS, donationAmountHint, isDonationAmount, type DonationLimits, type DonationPayment, type DonationPaymentMethod, type DonationRequest } from "../../../shared/donations";
 
 const PRESETS = [21, 1000, 21000];
 function hasNostrSigner() {
@@ -41,7 +41,9 @@ function subscribeToSigner(onChange: () => void) {
 function Page() {
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
-  const [limits, setLimits] = useState<DonationLimits | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<DonationPaymentMethod>("bolt11");
+  const [lightningLimits, setLimits] = useState<DonationLimits | null>(null);
+  const limits = paymentMethod === "cashu" ? CASHU_DONATION_LIMITS : lightningLimits;
   const [limitsError, setLimitsError] = useState(false);
   const [limitsAttempt, setLimitsAttempt] = useState(0);
   const canAddMessage = Number.isInteger(Number(amount)) && canIncludeDonationMessage(Number(amount));
@@ -50,7 +52,7 @@ function Page() {
   const hasSigner = useSyncExternalStore(subscribeToSigner, hasNostrSigner, () => false);
   const identity = preferredIdentity;
   const [submissionError, setSubmissionError] = useState<string | null>(null);
-  const [submission, setSubmission] = useState<"signing" | "invoice" | null>(null);
+  const [submission, setSubmission] = useState<"signing" | "payment" | null>(null);
   const isSubmitting = submission !== null;
   const [initialPayment, setInitialPayment] = useState<DonationPayment | null>(null);
   const submitting = useRef(false);
@@ -79,10 +81,10 @@ function Page() {
 
     setError(null);
     submitting.current = true;
-    setSubmission(identity === "profile" ? "signing" : "invoice");
+    setSubmission(identity === "profile" ? "signing" : "payment");
 
     try {
-      const request: DonationRequest = { amountSats: sats,
+      const request: DonationRequest = { amountSats: sats, paymentMethod,
         message: canIncludeDonationMessage(sats) ? message.trim() : "" };
       let authorization: string | undefined;
       if (identity === "profile") {
@@ -99,12 +101,12 @@ function Page() {
         }
       }
 
-      setSubmission("invoice");
+      setSubmission("payment");
       const next = await createDonation(request, authorization);
       setInitialPayment(next);
     } catch (err) {
       setSubmissionError(err instanceof Error && err.name !== "TypeError" && err.name !== "TimeoutError"
-        ? err.message : "We couldn't create an invoice. Please request a new one.");
+        ? err.message : "We couldn't create a payment request. Please try again.");
     } finally {
       setSubmission(null);
       submitting.current = false;
@@ -138,9 +140,23 @@ function Page() {
 
       <div className="mx-auto mt-12 max-w-md">
         {payment ? (
-          <InvoiceDisplay payment={payment} checking={checking} error={paymentError} onBack={handleBack} />
+          <PaymentDisplay payment={payment} checking={checking} error={paymentError} onBack={handleBack} />
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
+            <fieldset disabled={isSubmitting}>
+              <legend className={fieldLabel}>Pay with</legend>
+              <div className="mt-3 flex gap-6">
+                {([["bolt11", "Lightning"], ["cashu", "Cashu"]] as const).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-3 text-lg font-semibold text-bark-dark">
+                    <input type="radio" name="paymentMethod" value={value} checked={paymentMethod === value}
+                      onChange={() => { setPaymentMethod(value); setError(null); setSubmissionError(null); }}
+                      className="h-5 w-5 accent-bark" />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {paymentMethod === "cashu" && <p className={`${fieldHint} mt-3`}>Pay with ecash from the Minibits Bitcoin mint.</p>}
+            </fieldset>
             <fieldset disabled={isSubmitting || !limits}>
               <legend className={fieldLabel}>Pick an amount</legend>
               <div className="mt-3 grid grid-cols-3 gap-3">
@@ -273,7 +289,8 @@ function Page() {
             )}
 
             <button type="submit" disabled={isSubmitting || !limits} className={`${primaryButton} mt-2 self-center`}>
-              {submission === "signing" ? "Confirm in your extension…" : submission === "invoice" ? "Creating invoice…" : "Get invoice"}
+              {submission === "signing" ? "Confirm in your extension…" : submission === "payment" ? "Creating payment request…"
+                : paymentMethod === "cashu" ? "Get Cashu request" : "Get invoice"}
             </button>
           </form>
         )}

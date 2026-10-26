@@ -7,10 +7,21 @@ const item = (amount = 1001, id = 'one') => ({ id, amount, content: 'LFG!', crea
 const feed = (...donations) => ({ donations, donationCount: donations.length, donationTotal: donations.reduce((sum, d) => sum + d.amount, 0) });
 
 test('payment responses accept opaque Coco operation IDs instead of requiring UUIDs', () => {
-  const payment = { id: 'zY1pQ_t7Vf-A3k2mX9nL4w', amountSats: 21, invoice: 'lnbc-test', expiresAt: null, status: 'pending', paymentReceived: false };
+  const payment = { id: 'zY1pQ_t7Vf-A3k2mX9nL4w', amountSats: 21, paymentMethod: 'bolt11', invoice: 'lnbc-test', expiresAt: null, status: 'pending', paymentReceived: false };
   assert.equal(isDonationPayment(payment), true);
   assert.equal(parseDonationFeed(feed(item(21, payment.id))).donations[0].id, payment.id);
   for (const id of ['', null, undefined, 42]) assert.equal(isDonationPayment({ ...payment, id }), false);
+});
+
+test('payment responses distinguish Cashu requests from Lightning invoices', () => {
+  const cashu = { id: 'cashu-request-operation', paymentMethod: 'cashu', amountSats: 21,
+    paymentRequest: 'creqAencoded', expiresAt: null, status: 'pending', paymentReceived: false };
+  assert.equal(isDonationPayment(cashu), true);
+  for (const value of [{ ...cashu, paymentRequest: '' }, { ...cashu, paymentRequest: 'cashuBtoken' },
+    { ...cashu, invoice: 'lnbc-test' }, { ...cashu, paymentMethod: 'bolt11' },
+    { ...cashu, paymentMethod: undefined }, { ...cashu, status: 'anything' }]) {
+    assert.equal(isDonationPayment(value), false);
+  }
 });
 
 function harness({ cached = null, unavailable = false } = {}) {

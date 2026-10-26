@@ -3,6 +3,8 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 // Coco owns payment state; confirmed amount/time are cached for the public feed.
 export const donations = sqliteTable("donations", {
   operationId: text("operation_id").primaryKey(),
+  paymentMethod: text("payment_method", { enum: ["bolt11", "cashu"] }).notNull().default("bolt11"),
+  cashuRequestId: text("cashu_request_id").unique(),
   message: text("message").notNull(),
   donorPubkey: text("donor_pubkey"),
   amountSats: integer("amount_sats"),

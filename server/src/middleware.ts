@@ -9,6 +9,10 @@ export const responseHeaders: MiddlewareHandler = async (c, next) => {
 };
 
 export function corsMiddleware(origins: string[]): MiddlewareHandler {
+  const walletCors = cors({
+    origin: "*", allowMethods: ["POST", "OPTIONS"], allowHeaders: ["Content-Type"],
+    exposeHeaders: ["Retry-After"], maxAge: 600,
+  });
   const handleCors = cors({
     origin: origins,
     allowMethods: ["GET", "POST", "OPTIONS"],
@@ -17,6 +21,7 @@ export function corsMiddleware(origins: string[]): MiddlewareHandler {
     maxAge: 600,
   });
   return (c, next) => {
+    if (/^\/donate\/[^/]+\/cashu$/.test(c.req.path)) return walletCors(c, next);
     const origin = c.req.header("origin");
     if (origin && !origins.includes(origin)) {
       c.header("Vary", "Origin");

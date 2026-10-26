@@ -221,7 +221,7 @@ for (const earlierDraft of [false, true]) test(`submission migration preserves r
   } finally { previous.close(); }
   const upgraded = new AppStore(filename);
   try {
-    expect(upgraded.getDonation("operation")).toEqual({ operationId: "operation", message: "Go nuts",
+    expect(upgraded.getDonation("operation")).toEqual({ operationId: "operation", paymentMethod: "bolt11", cashuRequestId: null, message: "Go nuts",
       donorPubkey: earlierDraft ? null : "verified-pubkey", amountSats: earlierDraft ? null : 2100,
       confirmedAt: earlierDraft ? null : 1793000000 });
     expect(upgraded.database.query("SELECT value FROM settings WHERE key = 'wallet'").get()).toEqual({ value: "binding" });

@@ -4,15 +4,17 @@ import { primaryButton, secondaryButton } from "../../components/PacketPage";
 import { formatSats } from "../../lib/hackathon";
 import type { DonationPayment } from "../../../../shared/donations";
 
-interface InvoiceDisplayProps {
+interface PaymentDisplayProps {
   payment: DonationPayment;
   checking: boolean;
   error: string | null;
   onBack: () => void;
 }
 
-export default function InvoiceDisplay({ payment, checking, error, onBack }: InvoiceDisplayProps) {
-  const { invoice, amountSats: amount } = payment;
+export default function PaymentDisplay({ payment, checking, error, onBack }: PaymentDisplayProps) {
+  const { amountSats: amount } = payment;
+  const cashu = payment.paymentMethod === "cashu";
+  const request = cashu ? payment.paymentRequest : payment.invoice;
   const [copied, setCopied] = useState<"yes" | "failed" | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -33,14 +35,13 @@ export default function InvoiceDisplay({ payment, checking, error, onBack }: Inv
     ? payment.status === "review" ? "Payment received. Collection needs attention; please don't pay again." : "Payment received! Adding your donation to the pool…"
     : checking ? "Checking your payment…"
       : payment.status === "review" ? "We're checking this donation. Please wait before paying again."
-      : payment.status === "failed" ? "This invoice could not be completed. You can start a new donation."
-        : expired ? "This invoice has expired. If you already paid, leave this page open while we check."
+      : payment.status === "failed" ? "This payment request could not be completed. You can start a new donation."
+        : expired ? "This payment request has expired. If you already paid, leave this page open while we check."
           : "Waiting for payment…";
 
   const handleCopy = async () => {
-    if (!invoice) return;
     try {
-      await navigator.clipboard.writeText(invoice);
+      await navigator.clipboard.writeText(request);
       setCopied("yes");
     } catch {
       setCopied("failed");
@@ -52,13 +53,13 @@ export default function InvoiceDisplay({ payment, checking, error, onBack }: Inv
   return (
     <div className="flex flex-col items-center gap-6 text-center">
       {payable && <p className="text-lg font-medium text-bark">
-        Scan with any Lightning wallet to send{" "}
+        {cashu ? "Scan with a Cashu wallet using the Minibits Bitcoin mint to send " : "Scan with any Lightning wallet to send "}
         <strong className="font-semibold tabular-nums">{formatSats(amount)}</strong>.
       </p>}
 
       {payable && <div className="w-full max-w-[300px] border-4 border-bark bg-white p-4">
         <QRCodeSVG
-          value={invoice}
+          value={request}
           size={256}
           fgColor="#43200C"
           style={{ height: "auto", maxWidth: "100%", width: "100%" }}
@@ -73,15 +74,15 @@ export default function InvoiceDisplay({ payment, checking, error, onBack }: Inv
       {error && <p role="alert" className="text-base text-pumpkin-dark">{error}</p>}
 
       {payable && <div className="flex w-full flex-col items-center gap-4 sm:flex-row sm:justify-center">
-        <a href={`lightning:${invoice}`} className={primaryButton}>
+        {!cashu && <a href={`lightning:${payment.invoice}`} className={primaryButton}>
           Open in wallet
-        </a>
+        </a>}
         <button type="button" onClick={handleCopy} className={secondaryButton}>
-          {copied === "yes" ? "Copied!" : copied === "failed" ? "Copy failed" : "Copy invoice"}
+          {copied === "yes" ? "Copied!" : copied === "failed" ? "Copy failed" : cashu ? "Copy payment request" : "Copy invoice"}
         </button>
       </div>}
       <span aria-live="polite" className="sr-only">
-        {copied === "yes" ? "Invoice copied" : copied === "failed" ? "Couldn't copy the invoice" : ""}
+        {copied === "yes" ? "Payment request copied" : copied === "failed" ? "Couldn't copy the payment request" : ""}
       </span>
 
       {!received && payment.status !== "review" && <button

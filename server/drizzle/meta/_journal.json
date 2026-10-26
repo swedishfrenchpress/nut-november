@@ -36,6 +36,13 @@
       "when": 1793006997546,
       "tag": "0004_submissions",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793012047873,
+      "tag": "0005_cashu_payment_requests",
+      "breakpoints": true
     }
   ]
 }

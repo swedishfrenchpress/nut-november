@@ -1,4 +1,4 @@
-import type { CoreEvents, Manager, MintOperation, MintQuote } from "@cashu/coco-core";
+import { OperationInProgressError, PaymentRequestError, type CoreEvents, type Manager, type MintOperation, type MintQuote, type PaymentRequestReceiveOperation, type ReceiveOperation } from "@cashu/coco-core";
 import {
   canIncludeDonationMessage,
   donationAmountHint,
@@ -6,6 +6,8 @@ import {
   isDonationLimits,
   DONATION_MESSAGE_INPUT_LIMIT,
   getDonationMessagePreview,
+  CASHU_DONATION_LIMITS,
+  type DonationPaymentMethod,
   type DonationFeed,
   type DonationLimits,
   type DonationPayment,
@@ -16,15 +18,17 @@ import { ApiError } from "./errors.ts";
 import type { DonationRow } from "./schema.ts";
 import { AppStore } from "./store.ts";
 import { MINT_URL, type Config } from "./config.ts";
+import { CASHU_CONCURRENCY_LIMIT, validateCashuPayload } from "./cashu.ts";
 
 type PreparedOperation = Exclude<MintOperation, { state: "init" }>;
 
 // Use Coco directly, while requiring only the methods this module calls.
 export type DonationCoco = {
-  on(event: "mint-op:finalized", handler: (payload: CoreEvents["mint-op:finalized"]) => void): () => void;
+  on<E extends "mint-op:finalized" | "receive-op:finalized">(event: E, handler: (payload: CoreEvents[E]) => void): () => void;
   mint: Pick<Manager["mint"], "checkPaymentMethodCapability">;
   quotes: { mint: Pick<Manager["quotes"]["mint"], "create" | "get" | "listPending"> };
   ops: { mint: Pick<Manager["ops"]["mint"], "prepare" | "get"> };
+  paymentRequests: { incoming: Pick<Manager["paymentRequests"]["incoming"], "create" | "get" | "claimPayload"> };
 };
 
 export async function readDonationLimits(mint: Pick<Manager["mint"], "checkPaymentMethodCapability">): Promise<DonationLimits> {
@@ -66,12 +70,16 @@ export function parseDonationRequest(value: unknown, limits: DonationLimits): Do
     throw new ApiError(400, "invalid_request", "Invalid donation request.");
   }
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !["amountSats", "message"].includes(key))) {
+  if (Object.keys(input).some((key) => !["amountSats", "message", "paymentMethod"].includes(key))) {
     throw new ApiError(400, "invalid_request", "Unknown donation field.");
   }
-  const { amountSats, message = "" } = input;
-  if (!isDonationAmount(amountSats, limits)) {
-    throw new ApiError(400, "invalid_amount", donationAmountHint(limits));
+  const { amountSats, message = "", paymentMethod = "bolt11" } = input;
+  if (paymentMethod !== "bolt11" && paymentMethod !== "cashu") {
+    throw new ApiError(400, "invalid_method", "Choose Lightning or Cashu.");
+  }
+  const methodLimits = paymentMethod === "cashu" ? CASHU_DONATION_LIMITS : limits;
+  if (!isDonationAmount(amountSats, methodLimits)) {
+    throw new ApiError(400, "invalid_amount", donationAmountHint(methodLimits));
   }
   if (typeof message !== "string" || message.length > DONATION_MESSAGE_INPUT_LIMIT) {
     throw new ApiError(400, "invalid_message", "Message must be at most 280 characters.");
@@ -79,6 +87,7 @@ export function parseDonationRequest(value: unknown, limits: DonationLimits): Do
   return {
     amountSats,
     message: canIncludeDonationMessage(amountSats) ? message.trim() : "",
+    paymentMethod,
   };
 }
 
@@ -88,6 +97,7 @@ function payment(operation: PreparedOperation, quote: MintQuote): DonationPaymen
   if (operation.state === "finalized") status = operation.error ? "review" : "confirmed";
   if (operation.state === "failed") status = received ? "review" : "failed";
   return {
+    paymentMethod: "bolt11",
     id: operation.id,
     amountSats: operation.amount.toNumber(),
     invoice: operation.request,
@@ -101,17 +111,22 @@ export class DonationService {
   private creationQueue: Promise<unknown> = Promise.resolve();
   private unsubscribe?: () => void;
   private feedSyncFailed = false;
+  private receivingCashu = new Set<string>();
+  private uncertainCashu = new Set<string>();
+  private deliveries = new Set<Promise<DonationPayment>>();
   constructor(
     private store: AppStore,
     private coco: DonationCoco,
-    private config: Pick<Config, "maxPending">,
+    private config: Pick<Config, "maxPending" | "publicUrl">,
   ) {}
 
-  limits() { return readDonationLimits(this.coco.mint); }
+  limits(method: DonationPaymentMethod = "bolt11") {
+    return method === "cashu" ? Promise.resolve(CASHU_DONATION_LIMITS) : readDonationLimits(this.coco.mint);
+  }
 
   async start() {
     if (this.unsubscribe) return;
-    this.unsubscribe = this.coco.on("mint-op:finalized", ({ operation }) => {
+    const mintOff = this.coco.on("mint-op:finalized", ({ operation }) => {
       try {
         this.recordConfirmation(operation);
       } catch {
@@ -120,8 +135,20 @@ export class DonationService {
         console.error("Donation feed update failed; restart is required to recover from Coco");
       }
     });
+    const receiveOff = this.coco.on("receive-op:finalized", ({ operation }) => {
+      try {
+        this.recordCashuConfirmation(operation);
+      } catch {
+        this.feedSyncFailed = true;
+        console.error("Donation feed update failed; restart is required to recover from Coco");
+      }
+    });
+    this.unsubscribe = () => { mintOff(); receiveOff(); };
     // Recovery can finalize operations before our listener is attached.
-    for (const row of this.store.unconfirmed()) await this.sync(row.operationId);
+    for (const row of this.store.unconfirmed()) {
+      if (row.paymentMethod === "cashu") await this.cashuPayment(row);
+      else await this.sync(row.operationId);
+    }
   }
 
   stop() { this.unsubscribe?.(); this.unsubscribe = undefined; }
@@ -129,9 +156,25 @@ export class DonationService {
   async create(input: DonationRequest, donorPubkey: string | null): Promise<DonationPayment> {
     // Serialize admission and Coco's NUT-20 key allocation, including abandoned quotes.
     const result = this.creationQueue.then(async () => {
+      if (input.paymentMethod === "cashu") {
+        const requestId = crypto.randomUUID();
+        const op = await this.coco.paymentRequests.incoming.create({
+          requestId, amount: input.amountSats, unit: "sat", mints: [MINT_URL], singleUse: true,
+          description: "Nut November donation", encoding: "creqA",
+          transport: { type: "post", target: `${this.config.publicUrl}/donate/${requestId}/cashu` },
+        });
+        const row: DonationRow = {
+          operationId: op.id, paymentMethod: "cashu", cashuRequestId: requestId,
+          message: input.message, donorPubkey, amountSats: null, confirmedAt: null,
+        };
+        this.store.insertDonation(row);
+        return this.cashuPayment(row);
+      }
       const { op, quote } = await createInvoice(this.coco, this.config.maxPending, input.amountSats);
       const row: DonationRow = {
         operationId: op.id,
+        paymentMethod: "bolt11",
+        cashuRequestId: null,
         message: input.message,
         donorPubkey,
         amountSats: null,
@@ -147,13 +190,96 @@ export class DonationService {
     return result;
   }
 
-  async drain() { await this.creationQueue; }
+  async drain() {
+    await this.creationQueue;
+    await Promise.allSettled([...this.deliveries]);
+  }
 
   async get(id: string): Promise<DonationPayment> {
     const row = this.store.getDonation(id);
     if (!row) throw new ApiError(404, "not_found", "Donation not found.");
+    if (row.paymentMethod === "cashu") return this.cashuPayment(row);
     const { op, quote } = await this.operation(row);
     return payment(op, quote);
+  }
+
+  receiveCashu(requestId: string, value: unknown): Promise<DonationPayment> {
+    const delivery = this.claimCashu(requestId, value);
+    this.deliveries.add(delivery);
+    void delivery.then(() => this.deliveries.delete(delivery), () => this.deliveries.delete(delivery));
+    return delivery;
+  }
+
+  private async claimCashu(requestId: string, value: unknown): Promise<DonationPayment> {
+    const row = this.store.getByCashuRequestId(requestId);
+    if (!row || row.paymentMethod !== "cashu") throw new ApiError(404, "not_found", "Donation not found.");
+    const op = await this.cashuOperation(row);
+    validateCashuPayload(value, requestId, op.amount.toNumber());
+    if (this.receivingCashu.has(op.id)) {
+      throw new ApiError(409, "payment_processing", "Payment is being collected. Retry the same payment; do not pay again.");
+    }
+    if (this.receivingCashu.size >= CASHU_CONCURRENCY_LIMIT) {
+      throw new ApiError(503, "capacity", "Payment collection is busy. Retry delivery of the same payment.");
+    }
+    this.receivingCashu.add(op.id);
+    try {
+      const result = await this.coco.paymentRequests.incoming.claimPayload(op.id, JSON.stringify(value), { transport: "post" });
+      if (result.attempt.state === "rejected") {
+        throw new ApiError(400, "payment_rejected", "The Cashu payment was rejected. Check its proofs before retrying.");
+      }
+      if (result.attempt.state !== "finalized" || result.receiveOperation?.state !== "finalized") {
+        throw new Error("Cashu receive is unfinished");
+      }
+      this.recordCashuConfirmation(result.receiveOperation);
+      this.uncertainCashu.delete(op.id);
+      return await this.cashuPayment(row);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (error instanceof PaymentRequestError) {
+        throw new ApiError(409, "payment_conflict", "This payment cannot be accepted for the donation.");
+      }
+      this.uncertainCashu.add(op.id);
+      // Coco may have recovered and finalized even though execute threw.
+      const latest = await this.cashuPayment(row);
+      if (latest.status === "confirmed") return latest;
+      throw new ApiError(error instanceof OperationInProgressError ? 409 : 503, "payment_processing",
+        "Payment collection is unresolved. Retry delivery of the same payment; do not pay again.");
+    } finally {
+      this.receivingCashu.delete(op.id);
+    }
+  }
+
+  private async cashuOperation(row: DonationRow): Promise<PaymentRequestReceiveOperation> {
+    const op = await this.coco.paymentRequests.incoming.get(row.operationId);
+    if (!op) throw new ApiError(503, "wallet_record_missing", "Payment information is temporarily unavailable.");
+    if (op.requestId !== row.cashuRequestId || op.unit !== "sat" || !op.singleUse
+      || op.mints.length !== 1 || op.mints[0] !== MINT_URL || op.transport !== "post") {
+      throw new Error("Unexpected Cashu payment request");
+    }
+    return op;
+  }
+
+  private async cashuPayment(row: DonationRow): Promise<DonationPayment> {
+    const op = await this.cashuOperation(row);
+    if (op.state === "completed") {
+      this.store.confirm(op.id, op.amount.toNumber(), Math.floor((op.completedAt ?? op.updatedAt) / 1000));
+      this.uncertainCashu.delete(op.id);
+    }
+    const confirmed = op.state === "completed" || this.store.getDonation(op.id)?.confirmedAt != null;
+    return {
+      id: op.id, paymentMethod: "cashu", amountSats: op.amount.toNumber(), paymentRequest: op.encodedRequest,
+      expiresAt: null, paymentReceived: confirmed,
+      status: confirmed ? "confirmed" : this.receivingCashu.has(op.id) || this.uncertainCashu.has(op.id)
+        ? "review" : op.state === "cancelled" ? "failed" : "pending",
+    };
+  }
+
+  private recordCashuConfirmation(op: ReceiveOperation) {
+    if (op.state !== "finalized" || op.error || op.mintUrl !== MINT_URL || op.unit !== "sat"
+      || op.source?.type !== "payment-request") return;
+    const row = this.store.getDonation(op.source.requestOperationId);
+    if (!row || row.paymentMethod !== "cashu" || row.cashuRequestId !== op.source.requestId) return;
+    this.store.confirm(row.operationId, op.amount.subtract(op.fee).toNumber(), Math.floor(op.updatedAt / 1000));
   }
 
   async feed(): Promise<DonationFeed> {

@@ -8,6 +8,7 @@ import { sha256 } from "./identity.ts";
 import { AppStore } from "./store.ts";
 import { DonationService, readDonationLimits } from "./donations.ts";
 import { createApp } from "./http.ts";
+import { CASHU_BODY_LIMIT, cashuPostTransport } from "./cashu.ts";
 import { SUBMISSION_MAX_BODY_BYTES } from "../../shared/submissions.ts";
 
 process.umask(0o077);
@@ -23,6 +24,7 @@ cocoDatabase.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
 const coco = await initializeCoco({
   repo: new SqliteRepositories({ database: cocoDatabase }),
   seedGetter: async () => config.seed,
+  plugins: [cashuPostTransport()],
 });
 const service = new DonationService(store, coco, config);
 try {
@@ -40,7 +42,7 @@ try {
 }
 const app = createApp(service, store, config);
 const server = Bun.serve({
-  hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: SUBMISSION_MAX_BODY_BYTES,
+  hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: Math.max(SUBMISSION_MAX_BODY_BYTES, CASHU_BODY_LIMIT),
   fetch(request, server) {
     const peer = server.requestIP(request)?.address ?? "unknown";
     const client = config.trustFlyProxy ? request.headers.get("fly-client-ip") ?? peer : peer;
