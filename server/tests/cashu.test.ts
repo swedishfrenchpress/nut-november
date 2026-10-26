@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeCoco, type Manager } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
-import { PaymentRequest, PaymentRequestTransportType } from "@cashu/cashu-ts";
+import { getDecodedToken, getEncodedToken, normalizeProofAmounts, PaymentRequest, PaymentRequestTransportType } from "@cashu/cashu-ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -106,7 +106,8 @@ test("enforces HTTP input bounds and exact donation amounts before calling Coco"
   });
   const invalid = [null, [], {}, { ...payload, memo: {} }, { ...payload, proofs: [] },
     h.mint.payload(requestId, 20), h.mint.payload(requestId, 22),
-    invalidProof({ amount: Number.MAX_SAFE_INTEGER + 1 }), invalidProof({ amount: "1" }),
+    invalidProof({ amount: Number.MAX_SAFE_INTEGER + 1 }), invalidProof({ amount: "1.5" }),
+    ...["9007199254740992", "", "abc", "-1", "0", "1e0", null, true, {}, []].map((amount) => invalidProof({ amount })),
     invalidProof({ amount: 0 }), invalidProof({ amount: -1 }), invalidProof({ amount: 0.5 }),
     invalidProof({ secret: undefined }), invalidProof({ secret: {} }),
     { ...payload, proofs: [null] },
@@ -246,6 +247,22 @@ test("concurrent callbacks do not start another receive and shutdown drains deli
     await draining;
     expect(h.mint.swaps).toBe(1);
   } finally { release.resolve(); }
+});
+
+test("callback accepts the decoded-token amounts serialized by Minibits", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create(1000);
+  const token = getEncodedToken({ mint: payload.mint, unit: payload.unit, proofs: normalizeProofAmounts(payload.proofs) });
+  const decoded = getDecodedToken(token, [h.mint.id]);
+  const body = { id: requestId, mint: decoded.mint, unit: decoded.unit, proofs: decoded.proofs, memo: decoded.memo || undefined };
+  const serialized = JSON.parse(JSON.stringify(body));
+  expect(serialized.proofs.every((proof: { amount: unknown }) => typeof proof.amount === "string")).toBe(true);
+  const response = await h.deliver(requestId, body);
+  expect(response.status).toBe(200);
+  expect((await h.service.get(payment.id)).status).toBe("confirmed");
+  expect((await h.service.feed()).donationTotal).toBe(1000);
+  expect((await h.deliver(requestId, body)).status).toBe(200);
+  expect(h.mint.swaps).toBe(1);
 });
 
 test("callback accepts JSON payments without requiring wallets to set application/json", async () => {
