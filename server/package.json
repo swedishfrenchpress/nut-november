@@ -1,0 +1,25 @@
+{
+  "name": "nut-november-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@cashu/coco-core": "2.0.0",
+    "@cashu/coco-sqlite-bun": "2.0.0",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.13",
+    "hono-rate-limiter": "0.5.4",
+    "nostr-tools": "2.17.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "drizzle-kit": "0.31.11",
+    "typescript": "5.9.3"
+  }
+}

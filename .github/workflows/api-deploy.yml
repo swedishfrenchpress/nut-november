@@ -1,0 +1,23 @@
+name: Deploy donation API
+on:
+  workflow_dispatch:
+
+concurrency: donation-api-deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: donation-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+        working-directory: server
+      - run: bun run typecheck && bun test
+        working-directory: server
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --config server/fly.toml --remote-only --ha=false --strategy immediate
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

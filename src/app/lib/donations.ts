@@ -1,207 +1,100 @@
-import { nip57, verifyEvent, type Event } from "nostr-tools";
-import { getDonationMessagePreview } from "./donationMessages.ts";
+import type { DonationFeed, PublicDonation } from "../../../shared/donations.ts";
 
-export interface Donation {
-  id: string;
-  amount: number;
-  content: string;
-  createdAt: number;
-}
-
-interface DonationPolicy {
-  recipient: string;
-  receiptAuthor: string;
-  since: number;
-}
-
+export type Donation = PublicDonation;
 const PRIZE_KEYS = ["golden", "hardest", "nuttiest", "design", "fresh"] as const;
 export type PrizeKey = (typeof PRIZE_KEYS)[number];
 
-// OpenCash seeds the pool; donations are shared equally across the five prizes.
+// Sponsorship is a frontend commitment, never a payment in the API's ledger.
 const SPONSOR_PRIZES: Record<PrizeKey, number> = {
-  golden: 150_000,
-  hardest: 100_000,
-  nuttiest: 50_000,
-  design: 50_000,
-  fresh: 50_000,
+  golden: 150_000, hardest: 100_000, nuttiest: 50_000, design: 50_000, fresh: 50_000,
 };
 const SPONSOR_TOTAL = Object.values(SPONSOR_PRIZES).reduce((sum, amount) => sum + amount, 0);
-
-export interface DonationSnapshot {
-  donations: Donation[];
-  donationCount: number;
-  donationTotal: number;
-  /** Sponsor commitment plus donations. */
+export interface DonationSnapshot extends DonationFeed {
   total: number;
   prizes: Record<PrizeKey, number>;
   isLoading: boolean;
+  isStale: boolean;
+  error: string | null;
 }
 
-function summarize(donations: Donation[], isLoading: boolean): DonationSnapshot {
-  const donationTotal = donations.reduce((sum, donation) => sum + donation.amount, 0);
-  const donationShare = Math.floor(donationTotal / PRIZE_KEYS.length);
-  return {
-    donations,
-    donationCount: donations.length,
-    donationTotal,
-    total: SPONSOR_TOTAL + donationTotal,
-    prizes: Object.fromEntries(
-      PRIZE_KEYS.map((key) => [key, SPONSOR_PRIZES[key] + donationShare])
-    ) as Record<PrizeKey, number>,
-    isLoading,
-  };
+export function parseDonationFeed(value: unknown): DonationFeed | null {
+  if (!value || typeof value !== "object") return null;
+  const feed = value as DonationFeed;
+  if (!Array.isArray(feed.donations) || feed.donationCount !== feed.donations.length
+    || !Number.isSafeInteger(feed.donationTotal) || feed.donationTotal < 0) return null;
+  const ids = new Set<string>();
+  for (const d of feed.donations) {
+    if (!d || typeof d.id !== "string" || ids.has(d.id) || !Number.isSafeInteger(d.amount) || d.amount < 1
+      || typeof d.content !== "string" || Array.from(d.content).length > 256
+      || !Number.isSafeInteger(d.createdAt) || d.createdAt < 0
+      || (d.donorPubkey !== null && (typeof d.donorPubkey !== "string" || !/^[0-9a-f]{64}$/.test(d.donorPubkey)))) return null;
+    ids.add(d.id);
+  }
+  if (feed.donations.reduce((sum, d) => sum + d.amount, 0) !== feed.donationTotal) return null;
+  return { donations: feed.donations.map(({ id, amount, content, createdAt, donorPubkey }) => ({ id, amount, content, createdAt, donorPubkey }))
+    .sort((a, b) => b.amount - a.amount || b.createdAt - a.createdAt || a.id.localeCompare(b.id)),
+    donationCount: feed.donationCount, donationTotal: feed.donationTotal };
 }
 
-interface ReceiptHandlers {
-  onevent: (event: Event) => void;
-  oneose: () => void;
+function summarize(feed: DonationFeed, isLoading: boolean, isStale: boolean, error: string | null): DonationSnapshot {
+  const share = Math.floor(feed.donationTotal / PRIZE_KEYS.length);
+  return { ...feed, total: SPONSOR_TOTAL + feed.donationTotal,
+    prizes: Object.fromEntries(PRIZE_KEYS.map((key) => [key, SPONSOR_PRIZES[key] + share])) as Record<PrizeKey, number>,
+    isLoading, isStale, error };
 }
 
 type CacheStorage = Pick<Storage, "getItem" | "setItem">;
+export interface DonationFeedHandlers { snapshot(value: unknown): void; error(): void }
 
-// Both cached and relayed receipts go through the same trust and amount checks.
-export function parseDonation(value: unknown, policy: DonationPolicy): Donation | null {
-  try {
-    const event = value as Event;
-    if (
-      !event ||
-      event.kind !== 9735 ||
-      event.pubkey !== policy.receiptAuthor ||
-      !Number.isSafeInteger(event.created_at) ||
-      event.created_at < policy.since ||
-      !verifyEvent(event)
-    ) return null;
-
-    const recipientTags = event.tags.filter(([name]) => name === "p");
-    if (recipientTags.length !== 1 || recipientTags[0][1] !== policy.recipient) return null;
-
-    const descriptions = event.tags.filter(([name]) => name === "description");
-    const invoices = event.tags.filter(([name]) => name === "bolt11");
-    if (descriptions.length !== 1 || invoices.length !== 1) return null;
-
-    const request = JSON.parse(descriptions[0][1]) as Event;
-    if (request.kind !== 9734 || !verifyEvent(request)) return null;
-    const requestedRecipients = request.tags.filter(([name]) => name === "p");
-    if (requestedRecipients.length !== 1 || requestedRecipients[0][1] !== policy.recipient) return null;
-
-    const amount = nip57.getSatoshisAmountFromBolt11(invoices[0][1].toLowerCase());
-    const millisats = Math.round(amount * 1000);
-    if (!Number.isFinite(amount) || amount <= 0 || !Number.isSafeInteger(millisats) || millisats < 1) return null;
-
-    // The request amount is optional in NIP-57. When present it must match the invoice.
-    const requestedAmounts = request.tags.filter(([name]) => name === "amount");
-    if (requestedAmounts.length > 1) return null;
-    if (requestedAmounts.length === 1) {
-      const requestedAmount = requestedAmounts[0][1];
-      if (!/^\d+$/.test(requestedAmount) || Number(requestedAmount) !== millisats) return null;
-    }
-
-    return {
-      id: event.id,
-      amount: millisats / 1000,
-      content: getDonationMessagePreview(millisats / 1000, request.content),
-      createdAt: event.created_at,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function createDonationStore({
-  policy,
-  getStorage,
-  connect,
-}: {
-  policy: DonationPolicy;
+export function createDonationStore({ cacheKey, getStorage, connect }: {
+  cacheKey: string;
   getStorage: () => CacheStorage;
-  connect: (handlers: ReceiptHandlers) => () => void;
+  connect: (handlers: DonationFeedHandlers) => () => void;
 }) {
-  const cacheKey = `nutnovember:donations:v1:${policy.recipient}:${policy.receiptAuthor}:${policy.since}`;
-  const records = new Map<string, { event: Event; donation: Donation }>();
-  const listeners = new Set<() => void>();
-  const serverSnapshot = summarize([], true);
+  const serverSnapshot = summarize({ donations: [], donationCount: 0, donationTotal: 0 }, true, false, null);
   let snapshot = serverSnapshot;
   let cacheLoaded = false;
   let disconnect: (() => void) | undefined;
-
-  function makeSnapshot(isLoading: boolean): DonationSnapshot {
-    return summarize(
-      [...records.values()].map(({ donation }) => donation).sort(
-        (a, b) => b.amount - a.amount || b.createdAt - a.createdAt || a.id.localeCompare(b.id)
-      ),
-      isLoading
-    );
-  }
-
-  function update(isLoading = snapshot.isLoading) {
-    snapshot = makeSnapshot(isLoading);
-    listeners.forEach((listener) => listener());
-  }
-
-  function merge(value: unknown) {
-    const donation = parseDonation(value, policy);
-    if (!donation || records.has(donation.id)) return false;
-    records.set(donation.id, { event: value as Event, donation });
-    return true;
-  }
-
-  function persist() {
-    try {
-      getStorage().setItem(cacheKey, JSON.stringify([...records.values()].map(({ event }) => event)));
-    } catch {
-      // Storage can be unavailable or full; keep the live list usable in memory.
-    }
-  }
-
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach((listener) => listener());
   function loadCache() {
     if (cacheLoaded) return;
     cacheLoaded = true;
     try {
-      const cached: unknown = JSON.parse(getStorage().getItem(cacheKey) ?? "[]");
-      if (Array.isArray(cached)) cached.forEach(merge);
-    } catch {
-      // A corrupt cache must not prevent a fresh relay sync.
-    }
-    // Read once for the very first client render, without starting network work
-    // or notifying React subscribers during render.
-    snapshot = makeSnapshot(records.size === 0);
+      const cached = parseDonationFeed(JSON.parse(getStorage().getItem(cacheKey) ?? "null"));
+      if (cached) snapshot = summarize(cached, false, true, null);
+    } catch { /* Optional display cache; the API remains authoritative. */ }
   }
-
   function start() {
-    loadCache();
-
     let active = true;
+    function failed() {
+      if (!active) return;
+      snapshot = { ...snapshot, isLoading: false, isStale: true, error: "Donation updates are temporarily unavailable." };
+      notify();
+    }
     const close = connect({
-      onevent(event) {
-        if (!active || !merge(event)) return;
-        persist();
-        update(false);
+      snapshot(value) {
+        if (!active) return;
+        const feed = parseDonationFeed(value);
+        if (!feed) return failed();
+        snapshot = summarize(feed, false, false, null);
+        try { getStorage().setItem(cacheKey, JSON.stringify(feed)); } catch { /* Cache may be unavailable. */ }
+        notify();
       },
-      oneose() {
-        if (active) update(false);
-      },
+      error: failed,
     });
-    return () => {
-      active = false;
-      close();
-    };
+    return () => { active = false; close(); };
   }
-
   return {
-    getSnapshot: () => {
-      loadCache();
-      return snapshot;
-    },
+    getSnapshot() { loadCache(); return snapshot; },
     getServerSnapshot: () => serverSnapshot,
     subscribe(listener: () => void) {
+      loadCache();
       listeners.add(listener);
       if (listeners.size === 1) disconnect = start();
       return () => {
         listeners.delete(listener);
-        if (listeners.size === 0) {
-          disconnect?.();
-          disconnect = undefined;
-        }
+        if (listeners.size === 0) { disconnect?.(); disconnect = undefined; }
       };
     },
   };

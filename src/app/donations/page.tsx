@@ -6,7 +6,7 @@ import DonationHistory from "./DonationHistory";
 
 export default function Page() {
   return (
-    <PacketPage title="The harvest" intro="Every zap to the prize pool, biggest first.">
+    <PacketPage title="The harvest" intro="Every donation to the prize pool, biggest first.">
       <DonationHistory />
       <div className="mt-14 text-center">
         <Link href="/donate" className={primaryButton}>
