@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
 import { donations, settings, type DonationRow } from "./schema.ts";
 
@@ -31,6 +31,18 @@ export class DonationStore {
 
   get(operationId: string) { return this.db.select().from(donations).where(eq(donations.operationId, operationId)).get(); }
   list() { return this.db.select().from(donations).all(); }
+  unconfirmed() {
+    return this.db.select({ operationId: donations.operationId }).from(donations)
+      .where(isNull(donations.confirmedAt)).all();
+  }
+  confirmed() {
+    return this.db.select().from(donations)
+      .where(and(isNotNull(donations.amountSats), isNotNull(donations.confirmedAt))).all();
+  }
+  confirm(operationId: string, amountSats: number, confirmedAt: number) {
+    this.db.update(donations).set({ amountSats, confirmedAt })
+      .where(and(eq(donations.operationId, operationId), isNull(donations.confirmedAt))).run();
+  }
   insert(row: DonationRow) { this.db.insert(donations).values(row).run(); }
 
   close() { this.database.close(); }

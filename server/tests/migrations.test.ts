@@ -25,11 +25,11 @@ test("schema upgrades keep operation IDs, donor metadata and wallet binding whil
     } finally { previous.close(); }
     const upgraded = new DonationStore(filename);
     try {
-      expect(upgraded.get("operation")).toEqual({ operationId: "operation", message: "Go nuts", donorPubkey: null });
-      expect(upgraded.get("operation-2")).toEqual({ operationId: "operation-2", message: "Signed donation", donorPubkey: "verified-pubkey" });
+      expect(upgraded.get("operation")).toEqual({ operationId: "operation", message: "Go nuts", donorPubkey: null, amountSats: null, confirmedAt: null });
+      expect(upgraded.get("operation-2")).toEqual({ operationId: "operation-2", message: "Signed donation", donorPubkey: "verified-pubkey", amountSats: null, confirmedAt: null });
       expect(upgraded.get("private")).toBeUndefined();
       const columns = upgraded.database.query<{ name: string; pk: number }, []>("PRAGMA table_info(donations)").all();
-      expect(columns.map((column) => column.name)).toEqual(["operation_id", "message", "donor_pubkey"]);
+      expect(columns.map((column) => column.name)).toEqual(["operation_id", "message", "donor_pubkey", "amount_sats", "confirmed_at"]);
       expect(columns.find((column) => column.name === "operation_id")!.pk).toBe(1);
       expect(upgraded.database.query("SELECT value FROM settings WHERE key = 'wallet'").get()).toEqual({ value: "binding" });
       expect(upgraded.database.query("SELECT name FROM sqlite_master WHERE name = 'rate_limits'").get()).toBeNull();

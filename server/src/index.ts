@@ -23,18 +23,20 @@ const coco = await initializeCoco({
   repo: new SqliteRepositories({ database: cocoDatabase }),
   seedGetter: async () => config.seed,
 });
+const service = new DonationService(store, coco, config);
 try {
   if (!(await coco.mint.isTrustedMint(MINT_URL))) {
     await coco.mint.addMint(MINT_URL, { trusted: true });
   }
   await readDonationLimits(coco.mint);
+  await service.start();
 } catch (error) {
+  service.stop();
   await coco.dispose();
   cocoDatabase.close();
   store.close();
   throw error;
 }
-const service = new DonationService(store, coco, config);
 const app = createApp(service, config);
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: 4096,
@@ -55,6 +57,7 @@ async function shutdown() {
     await server.stop();
     await service.drain();
     await coco.dispose();
+    service.stop();
     cocoDatabase.close();
     store.close();
     clearTimeout(deadline);

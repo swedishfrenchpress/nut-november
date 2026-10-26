@@ -1,4 +1,4 @@
-import type { Manager, MintOperation, MintQuote } from "@cashu/coco-core";
+import type { CoreEvents, Manager, MintOperation, MintQuote } from "@cashu/coco-core";
 import {
   canIncludeDonationMessage,
   donationAmountHint,
@@ -21,6 +21,7 @@ type PreparedOperation = Exclude<MintOperation, { state: "init" }>;
 
 // Use Coco directly, while requiring only the methods this module calls.
 export type DonationCoco = {
+  on(event: "mint-op:finalized", handler: (payload: CoreEvents["mint-op:finalized"]) => void): () => void;
   mint: Pick<Manager["mint"], "checkPaymentMethodCapability">;
   quotes: { mint: Pick<Manager["quotes"]["mint"], "create" | "get" | "listPending"> };
   ops: { mint: Pick<Manager["ops"]["mint"], "prepare" | "get"> };
@@ -98,6 +99,8 @@ function payment(operation: PreparedOperation, quote: MintQuote): DonationPaymen
 
 export class DonationService {
   private creationQueue: Promise<unknown> = Promise.resolve();
+  private unsubscribe?: () => void;
+  private feedSyncFailed = false;
   constructor(
     private store: DonationStore,
     private coco: DonationCoco,
@@ -105,6 +108,23 @@ export class DonationService {
   ) {}
 
   limits() { return readDonationLimits(this.coco.mint); }
+
+  async start() {
+    if (this.unsubscribe) return;
+    this.unsubscribe = this.coco.on("mint-op:finalized", ({ operation }) => {
+      try {
+        this.recordConfirmation(operation);
+      } catch {
+        // Coco isolates listener errors. Keep collecting payments, but don't serve stale totals.
+        this.feedSyncFailed = true;
+        console.error("Donation feed update failed; restart is required to recover from Coco");
+      }
+    });
+    // Recovery can finalize operations before our listener is attached.
+    for (const row of this.store.unconfirmed()) await this.sync(row.operationId);
+  }
+
+  stop() { this.unsubscribe?.(); this.unsubscribe = undefined; }
 
   async create(input: DonationRequest, donorPubkey: string | null): Promise<DonationPayment> {
     // Serialize admission and Coco's NUT-20 key allocation, including abandoned quotes.
@@ -114,9 +134,13 @@ export class DonationService {
         operationId: op.id,
         message: input.message,
         donorPubkey,
+        amountSats: null,
+        confirmedAt: null,
       };
       // The invoice is exposed only after the donor metadata has been committed.
       this.store.insert(row);
+      // A very fast payment may have finalized before the metadata insert.
+      await this.sync(op.id);
       return payment(op, quote);
     });
     this.creationQueue = result.catch(() => {});
@@ -133,25 +157,34 @@ export class DonationService {
   }
 
   async feed(): Promise<DonationFeed> {
-    const entries = await Promise.all(this.store.list().map(async (row) => {
-      const { op } = await this.operation(row);
-      if (op.state !== "finalized" || op.error) return null;
-      const amount = op.amount.toNumber();
+    if (this.feedSyncFailed) throw new ApiError(503, "feed_sync", "Donation totals are temporarily unavailable.");
+    const donations = this.store.confirmed().map((row) => {
+      const amount = row.amountSats!;
       return {
         id: row.operationId,
         amount,
         content: getDonationMessagePreview(amount, row.message),
-        createdAt: Math.floor(op.updatedAt / 1000),
+        createdAt: row.confirmedAt!,
         donorPubkey: row.donorPubkey,
       };
-    }));
-    const donations = entries.filter((entry) => entry !== null)
+    })
       .sort((a, b) => b.amount - a.amount || b.createdAt - a.createdAt || a.id.localeCompare(b.id));
     return {
       donations,
       donationCount: donations.length,
       donationTotal: donations.reduce((sum, row) => sum + row.amount, 0),
     };
+  }
+
+  private recordConfirmation(op: MintOperation) {
+    if (op.state !== "finalized" || op.error || op.mintUrl !== MINT_URL || op.method !== "bolt11" || op.unit !== "sat") return;
+    this.store.confirm(op.id, op.amount.toNumber(), Math.floor(op.updatedAt / 1000));
+  }
+
+  private async sync(operationId: string) {
+    const op = await this.coco.ops.mint.get(operationId);
+    if (!op) throw new ApiError(503, "wallet_record_missing", "Payment information is temporarily unavailable.");
+    this.recordConfirmation(op);
   }
 
   private async operation(row: DonationRow) {

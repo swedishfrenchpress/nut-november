@@ -1,6 +1,6 @@
 # Donation API
 
-Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata and operation associations. Each library owns its connection and migrations; no transaction spans the two databases.
+Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations and the confirmed donation feed cache. Each library owns its connection and migrations; no transaction spans the two databases.
 
 ## HTTP contract
 
@@ -9,7 +9,7 @@ Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API pr
 | `POST /donate` | Create a Coco quote/operation, save donor metadata, then return its invoice. |
 | `GET /donate/limits` | Read the mint’s BOLT11/sat donation bounds through Coco. |
 | `GET /donate/:id` | Read payment status and invoice by Coco operation ID. |
-| `GET /donations` | Read the current confirmed donation list, count and sum. |
+| `GET /donations` | Read the confirmed donation feed, count and sum from app SQLite. |
 | `GET /healthz` | HTTP health check, available after startup completes. |
 
 Example anonymous request:
@@ -24,7 +24,7 @@ Every submission requests a new invoice, including identical submissions after a
 
 For an attributed donation, include `Authorization: Nostr <base64 JSON event>`. The NIP-98 event must have kind 27235, empty content, a valid ID/signature, a timestamp within 60 seconds, and exactly one each of `u`, `method`, and `payload`. They must equal the configured public `/donate` URL, `POST`, and SHA-256 of the exact request bytes. The pubkey comes only from the verified signature. No authorization means anonymous; invalid authorization returns 401. The signature proves the request author, independently of which Lightning wallet pays.
 
-Creation awaits Coco quote creation and operation preparation, then commits the donation metadata before returning 201. On failure it returns an error; the user may request a new invoice. A failure before the app insert can leave an unused Coco operation. A lost response after the insert can leave an unused donation record. Neither invoice is shown by this client. Such records are excluded from public totals unless the associated operation actually completes successfully.
+Creation awaits Coco quote creation and operation preparation, commits the donation metadata, and checks the locally stored operation once before returning 201. This catches a finalization event that arrived before the donation row existed. On failure it returns an error; the user may request a new invoice. A failure before the app insert can leave an unused Coco operation. A lost response after the insert can leave an unused donation record. Neither invoice is shown by this client. Such records are excluded from public totals unless the associated operation actually completes successfully.
 
 The response has `id`, `amountSats`, `invoice`, `expiresAt`, `status`, and `paymentReceived`. `id` is Coco's operation ID, an opaque string also used in the public feed and for status lookups. Anyone with this ID can read the invoice and payment status; the mint quote ID stays internal. The invoice is always present in a successful response. `expiresAt` is Unix milliseconds or null. The browser keeps the current payment reference in memory and polls its status while the invoice is displayed. Reloading the page returns to the donation form. Coco continues tracking and collecting issued invoices independently of the browser.
 
@@ -34,17 +34,23 @@ The public feed is `{ donations, donationCount, donationTotal }`. Each entry con
 
 ## Persistence and limits
 
-The donations table has three columns: primary key `operation_id`, `message`, and nullable `donor_pubkey`. The operation ID identifies the donation throughout persistence, API responses and the public feed. Coco owns the invoice, amount, expiry, payment state, errors and timestamps. Status and feed requests use Coco's local operation/quote lookups. The public feed is built from successful linked operations, with its count and sum calculated from the returned entries. Missing wallet records fail the read instead of silently reducing totals.
+The donations table stores primary key `operation_id`, `message`, nullable `donor_pubkey`, and two nullable feed fields: `amount_sats` and `confirmed_at` (Unix seconds). Both feed fields start null. A successful `mint-op:finalized` event copies the final amount and timestamp into the matching row. Updates only affect rows without a confirmation, so duplicate events do not change totals or timestamps. Unknown operations, pending payments, failures and error-finalized operations never enter the public feed.
 
-Coco's default watchers/processors observe the mint and collect paid quotes; its startup recovery resumes persisted operations. There is no application payment projection, event-replay requirement, reconciliation worker or retry queue. Paid operations that remain stalled or finalize with an error require operator investigation through Coco. Browser polling never calls the mint.
+`GET /donations` reads confirmed rows exclusively from app SQLite and calculates its count and sum from those entries. It performs no Coco operation or quote lookups. Coco remains the source of payment state; `GET /donate/:id` reads its local operation/quote records for invoice/status information. Cached confirmed donations remain available even if a wallet lookup later fails.
 
-`src/index.ts` initializes app persistence, opens Coco's database, awaits `initializeCoco()`, configures the mint and validates its capabilities sequentially before starting the HTTP server. It passes the manager directly to the donation service. There is no separate readiness state or endpoint: initialization failures prevent the listener from starting. The donation module contains the creation/capacity checks and public response mapping. Shutdown stops the HTTP server, drains invoice creation, disposes Coco and closes both databases; no wallet wrapper owns its lifecycle.
+Coco's default watchers/processors observe the mint and collect paid quotes; its startup recovery resumes persisted operations. The app subscribes to finalization events, then checks only donations that have no cached confirmation before opening the HTTP listener. This catches finalizations during Coco startup recovery or a crash between the Coco commit and the app update. No mint requests or app payment retries are involved in this catch-up pass.
+
+Coco isolates event-listener errors. If a feed update fails, the app logs the failure and returns 503 for the public feed until restart catches up; invoice/status reads and Coco payment collection continue. No stale authoritative totals are served. Paid operations that remain stalled or finalize with an error require operator investigation through Coco. Browser status polling never calls the mint.
+
+`src/index.ts` initializes app persistence, opens Coco's database, awaits `initializeCoco()`, configures the mint, validates its capabilities and starts donation feed synchronization sequentially before starting the HTTP server. It passes the manager directly to the donation service. There is no separate readiness state or endpoint: initialization failures prevent the listener from starting. The donation module contains the creation/capacity checks and public response mapping. Shutdown stops the HTTP server, drains invoice creation, disposes Coco, removes the feed listener and closes both databases; no wallet wrapper owns its lifecycle.
 
 Quote/operation creation is serialized to avoid concurrent NUT-20 key allocation in Coco 2.0.0 and enforce the capacity check. Hono handles routing, CORS, body limits and error dispatch. `hono-rate-limiter` 0.5.4 applies two independent memory stores after request validation and identity verification: 3 attempts per client IP per 10 minutes, followed by 50 globally per minute. Windows start with the first request for a key and counters reset on API restart. No rate-limit counters are stored in SQLite.
 
 A limited request returns HTTP 429 with the existing JSON error and `Retry-After`; CORS exposes that header to the frontend. Failed invoice creation still consumes slots. A per-IP rejection does not reach the global limiter; a global rejection consumes an IP slot. On Fly, the client IP still comes from Fly's proxy header; elsewhere it is the socket address. Public reads, health checks and preflight requests do not consume slots.
 
 Migration `0001_drop_rate_limits.sql` removes the obsolete counter table without touching donation records or wallet binding.
+
+Migration `0003_donation_feed_cache.sql` adds the two nullable confirmed-feed fields. Existing successful donations are populated by the startup catch-up pass.
 
 Migration `0002_operation_id_primary_key.sql` retains each operation ID, message and donor pubkey while removing the redundant donation/public ID columns. Wallet binding and Coco's database remain intact. Previous app-generated IDs stop resolving; reload the donation page to use the new API, and use operation IDs for any message-hiding entries.
 
@@ -114,4 +120,4 @@ Wallet balance inspection and eventual prize transfers belong to a private opera
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
 
-The current backend passes 25 tests, including operation IDs shared across creation/status/feed responses, internal quote IDs, mint-supplied amount bounds, refreshed capabilities, absent bounds, Hono middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. Eight frontend tests cover opaque Coco operation IDs and donation totals. Type checks, lint and the production build also pass. Browser checks cover loading/retrying limits, invalid responses, disabled presets, boundary validation, amounts above the old app cap, an absent maximum and mobile layout with mocked API responses. In-memory rate limits intentionally reset on restart; they assume the existing single API process.
+The current backend passes 30 tests, including feed reads without Coco lookups, duplicate finalization events, missed-event catch-up, finalization before metadata insertion, cache-write failure recovery, operation IDs shared across responses, internal quote IDs, mint-supplied amount bounds, Hono middleware behavior, exact-byte NIP-98 verification and schema migration preservation. Eight frontend tests cover opaque Coco operation IDs and donation totals. Type checks, lint and the production build also pass. Browser checks cover loading/retrying limits, invalid responses, disabled presets, boundary validation, amounts above the old app cap, an absent maximum and mobile layout with mocked API responses. In-memory rate limits intentionally reset on restart; they assume the existing single API process.

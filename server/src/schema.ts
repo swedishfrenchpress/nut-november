@@ -1,10 +1,12 @@
-import { sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-// Payment data belongs to Coco. This table only associates an operation with its donor metadata.
+// Coco owns payment state; confirmed amount/time are cached for the public feed.
 export const donations = sqliteTable("donations", {
   operationId: text("operation_id").primaryKey(),
   message: text("message").notNull(),
   donorPubkey: text("donor_pubkey"),
+  amountSats: integer("amount_sats"),
+  confirmedAt: integer("confirmed_at"),
 });
 
 export const settings = sqliteTable("settings", {

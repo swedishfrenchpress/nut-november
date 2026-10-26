@@ -19,7 +19,7 @@ const key = new Uint8Array(32).fill(1);
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
-function harness(maxPending = config.maxPending, limits = defaultLimits) {
+async function harness(maxPending = config.maxPending, limits = defaultLimits) {
   const dir = mkdtempSync(join(tmpdir(), 'nut-donation-test-'));
   const filename = join(dir, 'app.sqlite');
   const coco = new CocoFixture();
@@ -28,13 +28,15 @@ function harness(maxPending = config.maxPending, limits = defaultLimits) {
   let store = new DonationStore(filename);
   let service = new DonationService(store, coco.client, serviceConfig);
   let app = createApp(service, config);
-  cleanups.push(async () => { await service.drain(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  cleanups.push(async () => { await service.drain(); service.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  await service.start();
   return {
     coco, get store() { return store; }, get service() { return service; },
     // Reopen app persistence; the fake wallet stays in memory.
-    restart() {
-      store.close(); store = new DonationStore(filename);
+    async restart() {
+      service.stop(); store.close(); store = new DonationStore(filename);
       service = new DonationService(store, coco.client, serviceConfig);
+      await service.start();
       app = createApp(service, config);
     },
     request: (request: Request, client = '127.0.0.1') => app.request(request, undefined, { clientIp: client }),
@@ -53,13 +55,13 @@ function auth(body: DonationRequest, overrides: { method?: string; url?: string;
   return `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`;
 }
 
-test('only donor metadata and the operation association are saved; Coco supplies payment and totals', async () => {
-  const h = harness();
+test('Coco owns payment state; finalized events populate the local donation feed', async () => {
+  const h = await harness();
   const response = await h.post(input());
   expect(response.status).toBe(201);
   const payment = await response.json() as DonationPayment;
   const row = h.store.get(payment.id)!;
-  expect(row).toEqual({ operationId: payment.id, message: '🌰 Go nuts', donorPubkey: null });
+  expect(row).toEqual({ operationId: payment.id, message: '🌰 Go nuts', donorPubkey: null, amountSats: null, confirmedAt: null });
   const operation = h.coco.operations.get(payment.id)!;
   expect(payment.invoice).toBe(operation.request);
   expect(JSON.stringify(payment)).not.toContain(operation.quoteId);
@@ -79,11 +81,11 @@ test('only donor metadata and the operation association are saved; Coco supplies
   expect(statusBody).toMatchObject({ id: payment.id, invoice: payment.invoice, status: 'confirmed' });
   expect(JSON.stringify(statusBody)).not.toContain(operation.quoteId);
   expect(await h.service.feed()).toEqual(feed);
-  expect(h.store.get(row.operationId)).toEqual(row);
+  expect(h.store.get(row.operationId)).toEqual({ ...row, amountSats: 1001, confirmedAt: Math.floor(operation.updatedAt / 1000) });
 });
 
 test('each submission creates a new invoice, including concurrent identical submissions', async () => {
-  const h = harness();
+  const h = await harness();
   const responses = await Promise.all(Array.from({ length: 3 }, () => h.post(input())));
   const payments = await Promise.all(responses.map((response) => response.json() as Promise<DonationPayment>));
   expect(responses.every((response) => response.status === 201)).toBe(true);
@@ -94,7 +96,7 @@ test('each submission creates a new invoice, including concurrent identical subm
 });
 
 test('creation is serialized and shutdown waits for Coco persistence and metadata commits', async () => {
-  const h = harness();
+  const h = await harness();
   let prepared!: () => void;
   const preparedPromise = new Promise<void>((resolve) => { prepared = resolve; });
   let release!: () => void;
@@ -122,7 +124,7 @@ test('creation is serialized and shutdown waits for Coco persistence and metadat
 });
 
 test('concurrent requests cannot exceed Coco pending-quote capacity', async () => {
-  const h = harness(1);
+  const h = await harness(1);
   const responses = await Promise.all([h.post(input()), h.post(input())]);
   expect(responses.map((response) => response.status)).toEqual([201, 503]);
   expect(await responses[1].json()).toMatchObject({ error: { code: 'capacity' } });
@@ -130,13 +132,13 @@ test('concurrent requests cannot exceed Coco pending-quote capacity', async () =
 });
 
 test('creation failure returns an error without background recovery; the next submission starts fresh', async () => {
-  const h = harness();
+  const h = await harness();
   h.coco.failCreate = true;
   const response = await h.post(input());
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: { code: 'internal', message: "We couldn't create an invoice. Please request a new one." } });
   expect(h.store.list()).toHaveLength(0);
-  h.restart();
+  await h.restart();
   expect(h.coco.creations).toBe(1);
   h.coco.failCreate = false;
   expect((await h.post(input())).status).toBe(201);
@@ -145,7 +147,7 @@ test('creation failure returns an error without background recovery; the next su
 });
 
 test('failed metadata persistence leaves an unexposed Coco operation; the next submission creates another', async () => {
-  const h = harness(2);
+  const h = await harness(2);
   h.store.database.exec("CREATE TRIGGER reject_donation BEFORE INSERT ON donations BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;");
   const failed = await h.post(input());
   expect(failed.status).toBe(500);
@@ -165,9 +167,9 @@ test('failed metadata persistence leaves an unexposed Coco operation; the next s
 });
 
 test('a lost response is not recovered by a subsequent submission; already returned references still work', async () => {
-  const h = harness();
+  const h = await harness();
   const lost = await (await h.post(input())).json() as DonationPayment;
-  h.restart();
+  await h.restart();
   const next = await (await h.post(input())).json() as DonationPayment;
   expect(next.id).not.toBe(lost.id);
   expect(next.invoice).not.toBe(lost.invoice);
@@ -175,7 +177,7 @@ test('a lost response is not recovered by a subsequent submission; already retur
 });
 
 test('verified Nostr identity is stored as a pubkey; repeated valid submissions are separate donations', async () => {
-  const h = harness();
+  const h = await harness();
   const request = input();
   const authorization = auth(request);
   const first = await (await h.post(request, authorization)).json() as DonationPayment;
@@ -187,7 +189,7 @@ test('verified Nostr identity is stored as a pubkey; repeated valid submissions 
 });
 
 test('invalid, expired, future, wrong-method, wrong-URL and tampered-body signatures cannot create invoices', async () => {
-  const h = harness();
+  const h = await harness();
   const request = input();
   const now = Math.floor(Date.now() / 1000);
   for (const authorization of ['Nostr broken', auth(request, { at: now - 120 }), auth(request, { at: now + 120 }),
@@ -202,20 +204,22 @@ test('invalid, expired, future, wrong-method, wrong-URL and tampered-body signat
   expect(h.coco.creations).toBe(0);
 });
 
-test('reopening app storage reads current wallet state without event replay', async () => {
-  const h = harness();
+test('reopening app storage keeps the cached feed without rereading confirmed Coco operations', async () => {
+  const h = await harness();
   const payment = await (await h.post(input())).json() as DonationPayment;
   const row = h.store.get(payment.id)!;
   h.coco.settle(row.operationId);
-  h.restart();
+  const reads = h.coco.reads;
+  await h.restart();
+  expect(h.coco.reads).toBe(reads);
   expect((await h.service.get(row.operationId)).status).toBe('confirmed');
   expect((await h.service.feed()).donationTotal).toBe(1001);
-  expect(h.store.get(row.operationId)).toEqual(row);
+  expect(h.store.get(row.operationId)).toMatchObject({ ...row, amountSats: 1001, confirmedAt: expect.any(Number) });
   expect(h.coco.creations).toBe(1);
 });
 
 test('paid-but-pending and error-finalized operations never publish uncollected amounts', async () => {
-  const h = harness();
+  const h = await harness();
   const created = await (await h.post(input())).json() as DonationPayment;
   const op = h.coco.operations.get(h.store.get(created.id)!.operationId)!;
   h.coco.quotes.get(op.quoteId)!.amountPaid = op.amount;
@@ -227,7 +231,7 @@ test('paid-but-pending and error-finalized operations never publish uncollected 
 });
 
 test('expiry is supplied by Coco and a later collected payment still appears', async () => {
-  const h = harness();
+  const h = await harness();
   const created = await (await h.post(input())).json() as DonationPayment;
   const op = h.coco.operations.get(h.store.get(created.id)!.operationId)!;
   op.expiry = Math.floor(Date.now() / 1000) - 1;
@@ -236,28 +240,88 @@ test('expiry is supplied by Coco and a later collected payment still appears', a
   expect((await h.service.feed()).donationTotal).toBe(1001);
 });
 
-test('read endpoints only look up stored operations and do not create invoices', async () => {
-  const h = harness();
+test('status reads use Coco while feed reads only use the donations table', async () => {
+  const h = await harness();
   const created = await (await h.post(input())).json() as DonationPayment;
+  h.coco.settle(created.id);
+  const reads = h.coco.reads;
   for (let i = 0; i < 3; i++) {
     expect((await h.request(new Request(`${config.publicUrl}/donate/${created.id}`))).status).toBe(200);
     expect((await h.request(new Request(`${config.publicUrl}/donations`))).status).toBe(200);
   }
   expect(h.coco.creations).toBe(1);
-  expect(h.coco.reads).toBe(6);
+  expect(h.coco.reads).toBe(reads + 3);
   expect((await h.request(new Request(`${config.publicUrl}/donate/${crypto.randomUUID()}`))).status).toBe(404);
 });
 
-test('missing Coco records fail reads instead of fabricating pending state or reducing totals', async () => {
-  const h = harness();
+test('missing Coco records fail status reads but leave the cached feed and totals available after restart', async () => {
+  const h = await harness();
   const created = await (await h.post(input())).json() as DonationPayment;
+  h.coco.settle(created.id);
   h.coco.operations.clear();
+  await h.restart();
   expect((await h.request(new Request(`${config.publicUrl}/donate/${created.id}`))).status).toBe(503);
+  const response = await h.request(new Request(`${config.publicUrl}/donations`));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ donationCount: 1, donationTotal: 1001 });
+});
+
+test('duplicate finalization events never double count or change the confirmation timestamp', async () => {
+  const h = await harness();
+  const created = await (await h.post(input())).json() as DonationPayment;
+  h.coco.settle(created.id);
+  const feed = await h.service.feed();
+  h.coco.emitFinalized(created.id);
+  h.coco.emitFinalized(created.id);
+  expect(await h.service.feed()).toEqual(feed);
+  expect(feed).toMatchObject({ donationCount: 1, donationTotal: 1001 });
+});
+
+test('a payment finalized before donor metadata is inserted is included without waiting for another event', async () => {
+  const h = await harness();
+  h.coco.afterPrepare = async () => {
+    const op = [...h.coco.operations.values()][0];
+    h.coco.settle(op.id);
+    expect(h.store.get(op.id)).toBeUndefined();
+  };
+  const created = await (await h.post(input())).json() as DonationPayment;
+  expect((await h.service.feed()).donations[0]).toMatchObject({ id: created.id, amount: 1001 });
+  expect(h.store.get(created.id)!.amountSats).toBe(1001);
+});
+
+test('startup catches finalization missed while the app was stopped or Coco was recovering', async () => {
+  const h = await harness();
+  const created = await (await h.post(input())).json() as DonationPayment;
+  h.service.stop();
+  h.coco.settle(created.id, undefined, false);
+  expect(h.store.get(created.id)!.confirmedAt).toBeNull();
+  await h.restart();
+  expect((await h.service.feed()).donations[0]).toMatchObject({ id: created.id, amount: 1001 });
+  expect(h.store.get(created.id)!.amountSats).toBe(1001);
+});
+
+test('failed feed updates withhold totals until restart catches up without interrupting Coco payment collection', async () => {
+  const h = await harness();
+  const created = await (await h.post(input())).json() as DonationPayment;
+  h.store.database.exec("CREATE TRIGGER reject_confirmation BEFORE UPDATE OF confirmed_at ON donations BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;");
+  h.coco.settle(created.id);
+  expect(await h.service.get(created.id)).toMatchObject({ status: 'confirmed' });
   expect((await h.request(new Request(`${config.publicUrl}/donations`))).status).toBe(503);
+  expect(h.store.get(created.id)!.confirmedAt).toBeNull();
+  h.store.database.exec('DROP TRIGGER reject_confirmation');
+  await h.restart();
+  expect((await h.service.feed()).donationTotal).toBe(1001);
+});
+
+test('startup fails when an uncached donation has no matching Coco operation', async () => {
+  const h = await harness();
+  await h.post(input());
+  h.coco.operations.clear();
+  await expect(h.restart()).rejects.toThrow('Payment information is temporarily unavailable.');
 });
 
 test('CORS, methods, amount limits, body limits and message policy are enforced', async () => {
-  const h = harness();
+  const h = await harness();
   const preflight = await h.request(new Request(`${config.publicUrl}/donate`, { method: 'OPTIONS', headers: { Origin: config.origins[0] } }));
   expect(preflight.status).toBe(204);
   expect(preflight.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
@@ -281,7 +345,7 @@ test('CORS, methods, amount limits, body limits and message policy are enforced'
 
 test('advertised mint bounds drive validation and the public limits endpoint without an app amount cap', async () => {
   const limits = { minSats: 21, maxSats: 2_000_000 };
-  const h = harness(1000, limits);
+  const h = await harness(1000, limits);
   for (let i = 0; i < 5; i++) {
     const response = await h.request(new Request(`${config.publicUrl}/donate/limits`, { headers: { Origin: config.origins[0] } }));
     expect(response.status).toBe(200);
@@ -302,13 +366,13 @@ test('advertised mint bounds drive validation and the public limits endpoint wit
 });
 
 test('an omitted mint maximum permits positive safe integers without an artificial ceiling', async () => {
-  const h = harness(1000, { minSats: 1, maxSats: null });
+  const h = await harness(1000, { minSats: 1, maxSats: null });
   for (const amount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect((await h.post(input(amount))).status).toBe(400);
   for (const amount of [1, 1_000_001, Number.MAX_SAFE_INTEGER]) expect((await h.post(input(amount))).status).toBe(201);
 });
 
 test('updated Coco capabilities affect both validation and the limits endpoint without restarting', async () => {
-  const h = harness();
+  const h = await harness();
   expect((await h.post(input(1_000_001))).status).toBe(400);
   h.coco.limits = { minSats: 21, maxSats: 2_000_000 };
   const response = await h.request(new Request(`${config.publicUrl}/donate/limits`));
@@ -337,7 +401,7 @@ test('Coco supplies BOLT11 minting limits in sats, including absent bounds', asy
 });
 
 test('three attempts per IP count failures and reset ten minutes after the first attempt', async () => {
-  const h = harness();
+  const h = await harness();
   setSystemTime(600_001);
   cleanups.push(() => { setSystemTime(); });
   h.coco.failCreate = true;
@@ -359,7 +423,7 @@ test('three attempts per IP count failures and reset ten minutes after the first
 });
 
 test('fifty global attempts reset each minute; global rejections consume an IP slot', async () => {
-  const h = harness();
+  const h = await harness();
   setSystemTime(600_001);
   cleanups.push(() => { setSystemTime(); });
   for (let i = 0; i < 3; i++) expect((await h.post(input())).status).toBe(201);
@@ -376,19 +440,19 @@ test('fifty global attempts reset each minute; global rejections consume an IP s
 });
 
 test('restarting the API resets both in-memory quotas while preserving donation records', async () => {
-  const h = harness();
+  const h = await harness();
   for (let i = 0; i < 3; i++) await h.post(input());
   for (let i = 0; i < 47; i++) await h.post(input(), undefined, `client-${i}`);
   expect((await h.post(input())).status).toBe(429);
   expect((await h.post(input(), undefined, 'new-client')).status).toBe(429);
-  h.restart();
+  await h.restart();
   expect(h.store.list()).toHaveLength(50);
   expect((await h.post(input())).status).toBe(201);
   expect((await h.post(input(), undefined, 'new-client')).status).toBe(201);
 });
 
 test('Hono preserves exact signed JSON bytes, response headers and the health endpoint', async () => {
-  const h = harness();
+  const h = await harness();
   const body = JSON.stringify(input(), null, 2);
   const event = finalizeEvent({ kind: 27235, content: '', created_at: Math.floor(Date.now() / 1000), tags: [
     ['u', `${config.publicUrl}/donate`], ['method', 'POST'], ['payload', sha256(body)],
@@ -411,7 +475,7 @@ test('Hono preserves exact signed JSON bytes, response headers and the health en
 });
 
 test('wallet identity guards against the wrong seed and missing database pair', async () => {
-  const h = harness();
+  const h = await harness();
   expect(() => h.store.bindWallet('a', MINT_URL, true)).toThrow();
   h.store.bindWallet('a', MINT_URL, false);
   h.store.bindWallet('a', MINT_URL, true);
