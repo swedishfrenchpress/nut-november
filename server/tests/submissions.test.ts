@@ -68,11 +68,11 @@ test("submissions commit their six normalized fields and survive restart; the re
   expect(h.rows()).toHaveLength(2);
 });
 
-test("the API enforces the shared opening and closing instants", async () => {
+test("submissions are accepted before the hackathon starts and close at the shared deadline", async () => {
   const h = harness();
-  h.setTime(STARTS_AT - 1);
-  expect((await h.post()).status).toBe(403);
-  expect(h.rows()).toHaveLength(0);
+  h.setTime(STARTS_AT - 6 * 86_400_000);
+  expect((await h.post()).status).toBe(201);
+  expect(h.rows()).toHaveLength(1);
   h.setTime(STARTS_AT);
   expect((await h.post()).status).toBe(201);
   h.setTime(ENDS_AT - 1);
@@ -81,7 +81,7 @@ test("the API enforces the shared opening and closing instants", async () => {
   const closed = await h.post();
   expect(closed.status).toBe(403);
   expect(await closed.json()).toMatchObject({ error: { code: "submissions_closed" } });
-  expect(h.rows()).toHaveLength(2);
+  expect(h.rows()).toHaveLength(3);
 });
 
 test("missing, malformed, oversized, and unknown fields cannot reach storage", async () => {

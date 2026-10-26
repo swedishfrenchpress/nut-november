@@ -9,9 +9,8 @@ import LoadingText from "./LoadingText";
 
 export default function Prizes() {
   const phase = usePhase();
-  // The form only opens on Nov 1; until then the useful next step is the pool.
   const cta =
-    phase?.kind === "live"
+    phase !== null && phase.kind !== "over"
       ? { href: "/form", label: "Submit your project" }
       : { href: "/donate", label: "Grow the prize pool" };
 
