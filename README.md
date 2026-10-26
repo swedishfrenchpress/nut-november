@@ -44,3 +44,18 @@ The frontend uses `NEXT_PUBLIC_API_URL` at build time for donations and submissi
 Submissions are open ahead of the hackathon and close Nov 28, 2026 at 00:00 UTC, enforced by both the form and the API using the shared deadline. The hackathon itself runs Nov 1–27. Organizers can export entries through a private server shell; see [submission storage and export](server/README.md#project-submissions).
 
 See [API, deployment and recovery](server/README.md). The existing frontend deploys on pushes to `main`; provision the API before merging the frontend cutover. API deployment is a separate manual workflow.
+
+## Donor profiles
+
+The browser displays names and avatars for donations with a verified `donorPubkey`.
+It reads signed kind-0 Nostr events from `nutnovember:donor-profiles:v1` in
+localStorage, then refreshes the unique donor keys through the shared relay pool.
+Cached donation keys are usable before the API responds; newly confirmed donors
+are batched into additional lookups. Each author is requested once per sync
+session, and subscriptions close after their initial response or timeout. Reloading
+the app refreshes profiles again. No signing extension is needed to view profiles.
+
+Profiles use `display_name`, then `name`, with a shortened npub and placeholder
+when metadata or an avatar is unavailable. Relay and storage failures do not block
+the donation feed. Entries in `HIDDEN_DONATION_MESSAGE_IDS` hide the message, name
+and avatar for that donation while preserving its amount and npub link.
