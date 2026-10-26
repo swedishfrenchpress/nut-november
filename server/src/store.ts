@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
-import { donations, settings, submissions, type SubmissionRow } from "./schema.ts";
+import { donations, settings, submissions, withdrawalRequests, type SubmissionRow } from "./schema.ts";
 
 export class AppStore {
   readonly database: Database;
@@ -22,7 +22,8 @@ export class AppStore {
       const value = JSON.stringify({ fingerprint, mintUrl });
       if (existing && existing.value !== value) throw new Error("Wallet seed or mint does not match this application's database");
       if (!existing && walletAlreadyExists) throw new Error("Existing wallet has no application identity record; restore the matching app database");
-      if (existing && !walletAlreadyExists && tx.select({ operationId: donations.operationId }).from(donations).limit(1).get()) {
+      if (existing && !walletAlreadyExists && (tx.select({ operationId: donations.operationId }).from(donations).limit(1).get()
+        || tx.select({ requestId: withdrawalRequests.requestId }).from(withdrawalRequests).limit(1).get())) {
         throw new Error("Wallet database is missing; restore the matching Coco database before starting");
       }
       if (!existing) tx.insert(settings).values({ key: "wallet", value }).run();
@@ -49,6 +50,18 @@ export class AppStore {
   insertDonation(row: typeof donations.$inferInsert) { this.db.insert(donations).values(row).run(); }
 
   insertSubmission(row: SubmissionRow) { this.db.insert(submissions).values(row).run(); }
+
+  getWithdrawalRequest(requestId: string) {
+    return this.db.select().from(withdrawalRequests).where(eq(withdrawalRequests.requestId, requestId)).get();
+  }
+  listWithdrawalRequests() { return this.db.select().from(withdrawalRequests).all(); }
+  insertWithdrawalRequest(requestId: string, amountSats: number) {
+    this.db.insert(withdrawalRequests).values({ requestId, amountSats }).run();
+  }
+  bindWithdrawalRequest(requestId: string, operationId: string) {
+    this.db.update(withdrawalRequests).set({ operationId })
+      .where(eq(withdrawalRequests.requestId, requestId)).run();
+  }
 
   close() { this.database.close(); }
 }

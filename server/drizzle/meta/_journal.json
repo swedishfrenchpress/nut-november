@@ -43,6 +43,13 @@
       "when": 1793012047873,
       "tag": "0005_cashu_payment_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793017691670,
+      "tag": "0006_wallet_withdrawals",
+      "breakpoints": true
     }
   ]
 }

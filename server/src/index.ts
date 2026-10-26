@@ -10,11 +10,15 @@ import { DonationService, readDonationLimits } from "./donations.ts";
 import { createApp } from "./http.ts";
 import { CASHU_BODY_LIMIT, cashuPostTransport } from "./cashu.ts";
 import { SUBMISSION_MAX_BODY_BYTES } from "../../shared/submissions.ts";
+import { acquireWalletLock } from "./wallet-lock.ts";
+import { WalletOperations } from "./wallet-operations.ts";
+import { startWalletAdmin } from "./wallet-admin-http.ts";
 
 process.umask(0o077);
 const config = readConfig();
 mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 chmodSync(config.dataDir, 0o700);
+const releaseWalletLock = acquireWalletLock(config.dataDir);
 const walletPath = join(config.dataDir, "coco.sqlite");
 const walletAlreadyExists = existsSync(walletPath) && statSync(walletPath).size > 0;
 const store = new AppStore(join(config.dataDir, "app.sqlite"));
@@ -41,6 +45,8 @@ try {
   throw error;
 }
 const app = createApp(service, store, config);
+const wallet = new WalletOperations(coco, store);
+const adminServer = await startWalletAdmin(wallet, config.walletSocketPath);
 const server = Bun.serve({
   hostname: "0.0.0.0", port: config.port, idleTimeout: 30, maxRequestBodySize: Math.max(SUBMISSION_MAX_BODY_BYTES, CASHU_BODY_LIMIT),
   fetch(request, server) {
@@ -57,12 +63,13 @@ async function shutdown() {
   stopping = true;
   const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
-    await server.stop();
-    await service.drain();
+    await Promise.all([server.stop(), adminServer.stop()]);
+    await Promise.all([service.drain(), wallet.drain()]);
     await coco.dispose();
     service.stop();
     cocoDatabase.close();
     store.close();
+    releaseWalletLock();
     clearTimeout(deadline);
     process.exit(0);
   } catch {
