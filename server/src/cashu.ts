@@ -27,7 +27,7 @@ export function validateCashuPaymentLimits(value: unknown, amountSats: number): 
   const invalid = () => new ApiError(400, "invalid_payment", "Invalid Cashu payment payload.");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
   const payload = value as Record<string, unknown>;
-  if ((payload.memo !== undefined && typeof payload.memo !== "string")
+  if ((payload.memo != null && typeof payload.memo !== "string")
     || !Array.isArray(payload.proofs) || payload.proofs.length === 0 || payload.proofs.length > CASHU_PROOF_LIMIT) throw invalid();
 
   let total = 0;
