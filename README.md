@@ -41,4 +41,4 @@ npm run build
 
 The frontend uses `NEXT_PUBLIC_DONATION_API_URL` at build time. Development defaults to `http://localhost:3001`; production defaults to `https://api.nutnovember.org`. Configure the API's `PUBLIC_API_URL` and exact `CORS_ORIGINS` accordingly. Signed requests bind to that public URL.
 
-See [API, deployment and recovery](server/README.md) and the [design investigation](docs/coco-donation-research.md). The existing frontend deploys on pushes to `main`; provision the API before merging the frontend cutover. API deployment is a separate manual workflow.
+See [API, deployment and recovery](server/README.md). The existing frontend deploys on pushes to `main`; provision the API before merging the frontend cutover. API deployment is a separate manual workflow.
