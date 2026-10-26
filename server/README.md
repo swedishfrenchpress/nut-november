@@ -159,7 +159,28 @@ db.close();
 
 Alert on sustained `paid` or `review` operations, rising pending quote counts, failing HTTP health checks, low disk space, and stale backups. Request failures are logged without raw wallet objects. A `review` state needs private inspection of Coco's operation and quote. Do not count an error-finalized operation solely because the mint says issued.
 
-Wallet balance inspection and eventual prize transfers belong to a private operator session using Coco's API and the same seed/database, with the public service stopped and a fresh backup retained. There is no public spending endpoint. Do not publish raw Coco operations or proofs in logs or support tickets. Keep that wallet under a single operator/writer during payout, then restart the service so Coco's watchers can resume.
+### Wallet balance and Cashu withdrawals
+
+Use the private wallet CLI with the API's existing `DATA_DIR` and `COCO_SEED_HEX`. Stop the API gracefully and retain a fresh backup before withdrawing. These commands are available from the repository root or `server/`:
+
+```sh
+bun run wallet:balance
+bun run wallet:withdraw 2100 --output /secure/prize.cashu
+```
+
+`wallet:balance` prints JSON containing the mint, unit, `spendableSats`, `reservedSats`, `totalSats`, and a `withdrawals` list with operation IDs, states, amounts and fees. This reads local Coco state without mint requests or startup recovery. `totalSats` is spendable plus reserved ready proofs; outgoing tokens are no longer part of that balance. Pending withdrawals are listed separately and may already have been claimed since the last mint check. This wallet balance differs from the historical donation total, which payouts do not reduce.
+
+`wallet:withdraw <sats>` accepts positive whole safe-integer sats and uses Coco's persisted send operations to produce a spendable Cashu token from the configured Minibits mint. Coco handles proof selection, swaps, change and fees; the requested amount is the token amount, with any input fees charged additionally. Without `--output`, the token alone goes to stdout. With `--output`, the CLI creates a new file with permissions `0600`, writes and flushes the token, and prints no token to the terminal. It refuses to overwrite an existing file. The token is bearer money; keep it out of logs and support tickets. Operation IDs, amount, fee and progress go to stderr.
+
+Before executing a send, the CLI prints its operation ID and resume command. If token output is lost or the command is interrupted, inspect `wallet:balance` and resume the same operation:
+
+```sh
+bun run wallet:withdraw --operation OPERATION_ID --output /secure/recovered-prize.cashu
+```
+
+Resuming a prepared operation executes that send. Resuming a pending operation exports its persisted token again; it does not create another payment. The withdraw command runs Coco startup recovery with background watchers/processors disabled. A lost swap response may cause Coco to restore the funds to the wallet and mark the send `rolled_back`, instead of retaining an outgoing token. Finalized, rolled-back and unresolved operations produce no token. Inspect the operation's reported state and balance before deciding whether a new withdrawal is needed. Never create a new withdrawal merely to retry lost output. A failed command can leave an empty output file; use a new destination when resuming.
+
+Both commands require nonempty existing `coco.sqlite` and `app.sqlite`, and verify the seed/mint binding before opening Coco. They never initialize a new wallet. The API and CLI share an exclusive process lock in `DATA_DIR/wallet-lock.sqlite`; a second process fails immediately, and process exit (including a crash) releases the lock. Do not delete or replace the lock file. Keep one operator/writer during payout, then restart the API so its recovery and watchers resume and reconcile any donations collected during CLI recovery. There is no public balance or spending endpoint.
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
 

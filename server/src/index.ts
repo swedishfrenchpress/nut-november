@@ -10,11 +10,13 @@ import { DonationService, readDonationLimits } from "./donations.ts";
 import { createApp } from "./http.ts";
 import { CASHU_BODY_LIMIT, cashuPostTransport } from "./cashu.ts";
 import { SUBMISSION_MAX_BODY_BYTES } from "../../shared/submissions.ts";
+import { acquireWalletLock } from "./wallet-lock.ts";
 
 process.umask(0o077);
 const config = readConfig();
 mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 chmodSync(config.dataDir, 0o700);
+const releaseWalletLock = acquireWalletLock(config.dataDir);
 const walletPath = join(config.dataDir, "coco.sqlite");
 const walletAlreadyExists = existsSync(walletPath) && statSync(walletPath).size > 0;
 const store = new AppStore(join(config.dataDir, "app.sqlite"));
@@ -63,6 +65,7 @@ async function shutdown() {
     service.stop();
     cocoDatabase.close();
     store.close();
+    releaseWalletLock();
     clearTimeout(deadline);
     process.exit(0);
   } catch {
