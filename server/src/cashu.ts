@@ -1,4 +1,5 @@
 import type { Plugin } from "@cashu/coco-core/plugin";
+import { toAmount } from "@cashu/coco-core";
 import { ApiError } from "./errors.ts";
 
 export const CASHU_BODY_LIMIT = 128 * 1024;
@@ -27,16 +28,25 @@ export function validateCashuPaymentLimits(value: unknown, amountSats: number): 
   const invalid = () => new ApiError(400, "invalid_payment", "Invalid Cashu payment payload.");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
   const payload = value as Record<string, unknown>;
-  if ((payload.memo !== undefined && typeof payload.memo !== "string")
+  if ((payload.memo != null && typeof payload.memo !== "string")
     || !Array.isArray(payload.proofs) || payload.proofs.length === 0 || payload.proofs.length > CASHU_PROOF_LIMIT) throw invalid();
 
   let total = 0;
   for (const value of payload.proofs) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
     const proof = value as Record<string, unknown>;
-    if (!Number.isSafeInteger(proof.amount) || (proof.amount as number) <= 0
+    if ((typeof proof.amount !== "number" && typeof proof.amount !== "string")
       || typeof proof.secret !== "string") throw invalid();
-    total += proof.amount as number;
+    let amount: number;
+    try {
+      // cashu-ts Amount.toJSON() emits decimal strings (including in Minibits).
+      // Use Coco's parser and retain the application's safe-integer ceiling.
+      amount = toAmount(proof.amount).toNumber();
+    } catch {
+      throw invalid();
+    }
+    if (amount <= 0) throw invalid();
+    total += amount;
     if (!Number.isSafeInteger(total)) throw invalid();
   }
   // Minibits currently charges no input fee. Do not receive partial payments or
