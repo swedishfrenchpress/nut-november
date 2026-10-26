@@ -11,13 +11,19 @@ export class CocoFixture {
   failCreate = false;
   limits: DonationLimits = { minSats: 1, maxSats: 1_000_000 };
   afterPrepare?: () => Promise<void>;
-  private finalizedListeners = new Set<(payload: CoreEvents["mint-op:finalized"]) => void>();
+  private events = new EventTarget();
 
   client: DonationCoco = {
-    on: (_event, handler) => {
-      this.finalizedListeners.add(handler);
-      return () => { this.finalizedListeners.delete(handler); };
+    on: (event, handler) => {
+      const listener = (value: Event) => handler((value as CustomEvent<CoreEvents[typeof event]>).detail);
+      this.events.addEventListener(event, listener);
+      return () => { this.events.removeEventListener(event, listener); };
     },
+    paymentRequests: { incoming: {
+      create: async () => { throw new Error("Cashu is tested with the real Coco request service"); },
+      get: async () => null,
+      claimPayload: async () => { throw new Error("Unexpected Cashu payment"); },
+    } },
     mint: {
       checkPaymentMethodCapability: async () => ({
         supported: true, disabled: false, operation: "mint", nut: 4, method: "bolt11", unit: "sat",
@@ -84,6 +90,6 @@ export class CocoFixture {
   emitFinalized(id: string) {
     const operation = this.operations.get(id)!;
     if (operation.state !== "finalized") throw new Error("Expected a finalized operation");
-    for (const handler of this.finalizedListeners) handler({ mintUrl: operation.mintUrl, operationId: id, operation });
+    this.events.dispatchEvent(new CustomEvent("mint-op:finalized", { detail: { mintUrl: operation.mintUrl, operationId: id, operation } }));
   }
 }

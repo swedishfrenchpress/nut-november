@@ -1,6 +1,6 @@
 # Nut November
 
-Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Anonymous donations and Nostr-verified donor identity are supported. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment. The project form saves directly to the API without publishing to Nostr.
+Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Lightning invoices and Cashu payment requests are supported, with anonymous donations or Nostr-verified donor identity. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment. The project form saves directly to the API without publishing to Nostr.
 
 ## Development
 
@@ -26,7 +26,7 @@ await Bun.write(path, text.replace(/^COCO_SEED_HEX=$/m, `COCO_SEED_HEX=${seed}`)
 chmod 600 server/.env
 ```
 
-Run `npm run api:dev` and `npm run dev` in separate terminals. Open <http://localhost:3000>. The API runs at <http://localhost:3001>; migrations run on startup. The default mint is the real Minibits mint, so paying a development invoice sends real sats to the development wallet. Automated tests use an in-process wallet fake and temporary databases.
+Run `npm run api:dev` and `npm run dev` in separate terminals. Open <http://localhost:3000>. The API runs at <http://localhost:3001>; migrations run on startup. The default mint is the real Minibits mint, so paying a development invoice sends real sats to the development wallet. Automated tests use a wallet fake for Lightning and real Coco/SQLite with an intercepted test mint for Cashu; they never send real sats.
 
 ## Checks
 

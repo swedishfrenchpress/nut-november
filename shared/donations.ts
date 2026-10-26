@@ -12,6 +12,8 @@ export function getDonationMessagePreview(sats: number, content: string): string
 }
 
 export type DonationStatus = "pending" | "paid" | "confirmed" | "review" | "failed";
+export type DonationPaymentMethod = "bolt11" | "cashu";
+export const CASHU_DONATION_LIMITS: DonationLimits = { minSats: 1, maxSats: null };
 
 export interface DonationLimits {
   minSats: number;
@@ -41,17 +43,23 @@ export function donationAmountHint(limits: DonationLimits): string {
 export interface DonationRequest {
   amountSats: number;
   message: string;
+  /** Older clients default to Lightning. */
+  paymentMethod?: DonationPaymentMethod;
 }
 
 /** id is Coco's operation ID, also used in the public donation feed. */
-export interface DonationPayment {
+interface DonationPaymentBase {
   id: string;
   amountSats: number;
-  invoice: string;
   expiresAt: number | null;
   status: DonationStatus;
   paymentReceived: boolean;
 }
+
+export type DonationPayment = DonationPaymentBase & (
+  | { paymentMethod: "bolt11"; invoice: string; paymentRequest?: never }
+  | { paymentMethod: "cashu"; paymentRequest: string; invoice?: never }
+);
 
 export interface PublicDonation {
   id: string;
@@ -72,7 +80,8 @@ export function isDonationPayment(value: unknown): value is DonationPayment {
   const v = value as DonationPayment;
   return typeof v.id === "string" && v.id.length > 0
     && Number.isSafeInteger(v.amountSats) && v.amountSats > 0
-    && typeof v.invoice === "string" && v.invoice.length > 0
+    && ((v.paymentMethod === "bolt11" && typeof v.invoice === "string" && v.invoice.length > 0 && v.paymentRequest === undefined)
+      || (v.paymentMethod === "cashu" && typeof v.paymentRequest === "string" && v.paymentRequest.startsWith("creqA") && v.invoice === undefined))
     && (v.expiresAt === null || Number.isSafeInteger(v.expiresAt))
     && ["pending", "paid", "confirmed", "review", "failed"].includes(v.status)
     && typeof v.paymentReceived === "boolean";

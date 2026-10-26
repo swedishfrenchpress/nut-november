@@ -7,6 +7,7 @@ import { DonationService, parseDonationRequest } from "./donations.ts";
 import { ApiError } from "./errors.ts";
 import { sha256, verifyDonorIdentity } from "./identity.ts";
 import { corsMiddleware, responseHeaders } from "./middleware.ts";
+import { CASHU_BODY_LIMIT } from "./cashu.ts";
 import { AppStore } from "./store.ts";
 import { ENDS_AT } from "../../shared/hackathon.ts";
 import { SUBMISSION_MAX_BODY_BYTES, validateSubmission, type SubmissionRequest } from "../../shared/submissions.ts";
@@ -45,8 +46,10 @@ export function createApp(
     let message = "Payment information is temporarily unavailable.";
     if (c.req.path === "/submissions") {
       message = "We couldn't save your submission. Please try again in a moment.";
+    } else if (c.req.path.endsWith("/cashu")) {
+      message = "Payment collection is unresolved. Retry delivery of the same payment; do not pay again.";
     } else if (c.req.method === "POST") {
-      message = "We couldn't create an invoice. Please request a new one.";
+      message = "We couldn't create a payment request. Please try again.";
     }
     return c.json({ error: { code: "internal", message } }, 500);
   });
@@ -57,12 +60,13 @@ export function createApp(
     await next();
   });
 
-  const limited = { error: { code: "rate_limit", message: "Too many invoice requests. Please try again later." } };
+  const limited = { error: { code: "rate_limit", message: "Too many payment requests. Please try again later." } };
   app.post("/donate",
     bodyLimit({ maxSize: 4096, onError: () => { throw new ApiError(413, "body_size", "Request is too large."); } }),
     async (c, next) => {
       const { raw, value } = await readJson(c);
-      c.set("donation", parseDonationRequest(value, await service.limits()));
+      const method = value && typeof value === "object" && "paymentMethod" in value && value.paymentMethod === "cashu" ? "cashu" : "bolt11";
+      c.set("donation", parseDonationRequest(value, await service.limits(method)));
       const identity = verifyDonorIdentity(
         c.req.header("authorization") ?? null, raw, `${config.publicUrl}/donate`,
       );
@@ -91,10 +95,20 @@ export function createApp(
       store.insertSubmission({ ...c.var.submission, id, createdAt: Date.now() });
       return c.json({ id }, 201);
     });
+  const deliveryLimited = { error: { code: "rate_limit", message: "Too many payment deliveries. Retry the same payment later." } };
+  app.post("/donate/:requestId/cashu",
+    bodyLimit({ maxSize: CASHU_BODY_LIMIT, onError: () => { throw new ApiError(413, "body_size", "Payment payload is too large."); } }),
+    rateLimiter<Env>({ windowMs: 60_000, limit: 30, keyGenerator: (c) => sha256(c.env.clientIp), message: deliveryLimited }),
+    rateLimiter<Env>({ windowMs: 60_000, limit: 120, keyGenerator: () => "global", message: deliveryLimited }),
+    async (c) => {
+      const { value } = await readJson(c);
+      const payment = await service.receiveCashu(c.req.param("requestId"), value);
+      return c.json({ id: payment.id, status: payment.status });
+    });
   app.get("/donate/limits", async (c) => c.json(await service.limits()));
   app.get("/donate/:id", async (c) => c.json(await service.get(c.req.param("id"))));
   app.get("/donations", async (c) => c.json(await service.feed()));
-  for (const path of ["/donate", "/donate/:id", "/donations", "/submissions"]) {
+  for (const path of ["/donate", "/donate/:id", "/donate/:requestId/cashu", "/donations", "/submissions"]) {
     app.all(path, (c) => c.json({ error: { code: "method", message: "Method not allowed." } }, 405));
   }
   return app;

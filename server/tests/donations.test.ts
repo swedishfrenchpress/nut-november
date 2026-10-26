@@ -24,7 +24,7 @@ async function harness(maxPending = config.maxPending, limits = defaultLimits) {
   const filename = join(dir, 'app.sqlite');
   const coco = new CocoFixture();
   coco.limits = limits;
-  const serviceConfig = { maxPending };
+  const serviceConfig = { maxPending, publicUrl: config.publicUrl };
   let store = new AppStore(filename);
   let service = new DonationService(store, coco.client, serviceConfig);
   let app = createApp(service, store, config);
@@ -61,7 +61,7 @@ test('Coco owns payment state; finalized events populate the local donation feed
   expect(response.status).toBe(201);
   const payment = await response.json() as DonationPayment;
   const row = h.store.getDonation(payment.id)!;
-  expect(row).toEqual({ operationId: payment.id, message: '🌰 Go nuts', donorPubkey: null, amountSats: null, confirmedAt: null });
+  expect(row).toEqual({ operationId: payment.id, paymentMethod: "bolt11", cashuRequestId: null, message: '🌰 Go nuts', donorPubkey: null, amountSats: null, confirmedAt: null });
   const operation = h.coco.operations.get(payment.id)!;
   expect(payment.invoice).toBe(operation.request);
   expect(JSON.stringify(payment)).not.toContain(operation.quoteId);
@@ -136,7 +136,7 @@ test('creation failure returns an error without background recovery; the next su
   h.coco.failCreate = true;
   const response = await h.post(input());
   expect(response.status).toBe(500);
-  expect(await response.json()).toEqual({ error: { code: 'internal', message: "We couldn't create an invoice. Please request a new one." } });
+  expect(await response.json()).toEqual({ error: { code: 'internal', message: "We couldn't create a payment request. Please try again." } });
   expect(h.store.listDonations()).toHaveLength(0);
   await h.restart();
   expect(h.coco.creations).toBe(1);
@@ -411,7 +411,7 @@ test('three attempts per IP count failures and reset ten minutes after the first
   const blocked = await h.post(input());
   expect(blocked.status).toBe(429);
   expect(blocked.headers.get('Retry-After')).toBe('600');
-  expect(await blocked.json()).toEqual({ error: { code: 'rate_limit', message: 'Too many invoice requests. Please try again later.' } });
+  expect(await blocked.json()).toEqual({ error: { code: 'rate_limit', message: 'Too many payment requests. Please try again later.' } });
   setSystemTime(660_001);
   expect((await h.post(input())).headers.get('Retry-After')).toBe('540');
   expect(h.coco.creations).toBe(3);
