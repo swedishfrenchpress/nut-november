@@ -17,8 +17,8 @@ type Env = {
   Variables: { donation: DonationRequest; donorPubkey: string | null; submission: SubmissionRequest };
 };
 
-async function readJson(c: Context) {
-  if (c.req.header("content-type")?.split(";")[0].trim() !== "application/json") {
+async function readJson(c: Context, requireContentType = true) {
+  if (requireContentType && c.req.header("content-type")?.split(";")[0].trim() !== "application/json") {
     throw new ApiError(415, "content_type", "Send application/json.");
   }
   const raw = new Uint8Array(await c.req.arrayBuffer());
@@ -101,7 +101,9 @@ export function createApp(
     rateLimiter<Env>({ windowMs: 60_000, limit: 30, keyGenerator: (c) => sha256(c.env.clientIp), message: deliveryLimited }),
     rateLimiter<Env>({ windowMs: 60_000, limit: 120, keyGenerator: () => "global", message: deliveryLimited }),
     async (c) => {
-      const { value } = await readJson(c);
+      // NUT-18 requires a JSON body, but wallets such as Macadamia omit its MIME
+      // type. Validate the body itself while retaining strict creation headers.
+      const { value } = await readJson(c, false);
       const payment = await service.receiveCashu(c.req.param("requestId"), value);
       return c.json({ id: payment.id, status: payment.status });
     });

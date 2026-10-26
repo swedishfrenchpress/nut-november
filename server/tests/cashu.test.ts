@@ -248,6 +248,33 @@ test("concurrent callbacks do not start another receive and shutdown drains deli
   } finally { release.resolve(); }
 });
 
+test("callback accepts JSON payments without requiring wallets to set application/json", async () => {
+  const h = await harness();
+  for (const contentType of [undefined, "application/x-www-form-urlencoded", "text/plain;charset=UTF-8", "application/octet-stream"]) {
+    const { payment, requestId, payload } = await h.create();
+    const response = await h.request(`/donate/${requestId}/cashu`, {
+      method: "POST",
+      headers: contentType ? { "Content-Type": contentType } : {},
+      body: new TextEncoder().encode(JSON.stringify(payload)),
+    });
+    expect(response.status).toBe(200);
+    expect((await h.service.get(payment.id)).status).toBe("confirmed");
+  }
+  expect(h.mint.swaps).toBe(4);
+  expect((await h.service.feed()).donationTotal).toBe(84);
+});
+
+test("callback accepts an absent memo serialized as null by CDK wallets", async () => {
+  const h = await harness();
+  const { payment, requestId, payload } = await h.create();
+  const response = await h.deliver(requestId, { ...payload, memo: null });
+  expect(response.status).toBe(200);
+  expect((await h.service.get(payment.id)).status).toBe("confirmed");
+  expect((await h.service.feed()).donationTotal).toBe(21);
+  expect((await h.deliver(requestId, { ...payload, memo: null })).status).toBe(200);
+  expect(h.mint.swaps).toBe(1);
+});
+
 test("callback permits browser-wallet preflight while creation keeps its origin and body restrictions", async () => {
   const h = await harness();
   const donation = await h.create();
@@ -257,7 +284,10 @@ test("callback permits browser-wallet preflight while creation keeps its origin 
   expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("*");
   expect((await h.request("/donate", { method: "POST", headers: { Origin: "https://wallet.example" } })).status).toBe(403);
   expect((await h.request(path)).status).toBe(405);
-  expect((await h.request(path, { method: "POST", body: "{}" })).status).toBe(415);
+  expect((await h.request(path, { method: "POST", body: "{}" })).status).toBe(400);
+  expect((await h.request("/donate", { method: "POST", body: "{}" })).status).toBe(415);
+  expect((await h.request("/submissions", { method: "POST", body: "{}" })).status).toBe(415);
+  expect((await h.request(path, { method: "POST", body: "id=example&proofs=[]" })).status).toBe(400);
   expect((await h.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" })).status).toBe(400);
   expect((await h.request(path, { method: "POST", body: "x".repeat(CASHU_BODY_LIMIT + 1) })).status).toBe(413);
   expect((await h.request("/donate", { method: "POST", body: "x".repeat(4097) })).status).toBe(413);
