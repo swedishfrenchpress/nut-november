@@ -22,14 +22,14 @@ export class DonationStore {
       const value = JSON.stringify({ fingerprint, mintUrl });
       if (existing && existing.value !== value) throw new Error("Wallet seed or mint does not match this application's database");
       if (!existing && walletAlreadyExists) throw new Error("Existing wallet has no application identity record; restore the matching app database");
-      if (existing && !walletAlreadyExists && tx.select({ id: donations.id }).from(donations).limit(1).get()) {
+      if (existing && !walletAlreadyExists && tx.select({ operationId: donations.operationId }).from(donations).limit(1).get()) {
         throw new Error("Wallet database is missing; restore the matching Coco database before starting");
       }
       if (!existing) tx.insert(settings).values({ key: "wallet", value }).run();
     });
   }
 
-  get(id: string) { return this.db.select().from(donations).where(eq(donations.id, id)).get(); }
+  get(operationId: string) { return this.db.select().from(donations).where(eq(donations.operationId, operationId)).get(); }
   list() { return this.db.select().from(donations).all(); }
   insert(row: DonationRow) { this.db.insert(donations).values(row).run(); }
 

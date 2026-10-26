@@ -59,21 +59,27 @@ test('only donor metadata and the operation association are saved; Coco supplies
   expect(response.status).toBe(201);
   const payment = await response.json() as DonationPayment;
   const row = h.store.get(payment.id)!;
-  expect(row).toEqual({ id: payment.id, publicId: expect.any(String), operationId: expect.any(String), message: '🌰 Go nuts', donorPubkey: null });
-  expect(payment.invoice).toBe(h.coco.operations.get(row.operationId)!.request);
+  expect(row).toEqual({ operationId: payment.id, message: '🌰 Go nuts', donorPubkey: null });
+  const operation = h.coco.operations.get(payment.id)!;
+  expect(payment.invoice).toBe(operation.request);
+  expect(JSON.stringify(payment)).not.toContain(operation.quoteId);
   expect(payment.status).toBe('pending');
   expect(await h.service.feed()).toEqual({ donations: [], donationCount: 0, donationTotal: 0 });
   h.coco.settle(row.operationId);
-  expect((await h.service.get(row.id)).status).toBe('confirmed');
+  expect((await h.service.get(row.operationId)).status).toBe('confirmed');
   const feed = await h.service.feed();
   expect(feed.donationTotal).toBe(1001);
   expect(feed.donationCount).toBe(1);
-  expect(feed.donations[0].id).toBe(row.publicId);
-  expect(JSON.stringify(feed)).not.toContain(row.operationId);
-  expect(JSON.stringify(feed)).not.toContain(payment.id);
+  expect(feed.donations[0].id).toBe(payment.id);
+  expect(JSON.stringify(feed)).not.toContain(operation.quoteId);
   expect(JSON.stringify(feed)).not.toContain(payment.invoice);
+  const status = await h.request(new Request(`${config.publicUrl}/donate/${feed.donations[0].id}`));
+  expect(status.status).toBe(200);
+  const statusBody = await status.json();
+  expect(statusBody).toMatchObject({ id: payment.id, invoice: payment.invoice, status: 'confirmed' });
+  expect(JSON.stringify(statusBody)).not.toContain(operation.quoteId);
   expect(await h.service.feed()).toEqual(feed);
-  expect(h.store.get(row.id)).toEqual(row);
+  expect(h.store.get(row.operationId)).toEqual(row);
 });
 
 test('each submission creates a new invoice, including concurrent identical submissions', async () => {
@@ -202,9 +208,9 @@ test('reopening app storage reads current wallet state without event replay', as
   const row = h.store.get(payment.id)!;
   h.coco.settle(row.operationId);
   h.restart();
-  expect((await h.service.get(row.id)).status).toBe('confirmed');
+  expect((await h.service.get(row.operationId)).status).toBe('confirmed');
   expect((await h.service.feed()).donationTotal).toBe(1001);
-  expect(h.store.get(row.id)).toEqual(row);
+  expect(h.store.get(row.operationId)).toEqual(row);
   expect(h.coco.creations).toBe(1);
 });
 

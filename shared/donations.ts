@@ -43,7 +43,7 @@ export interface DonationRequest {
   message: string;
 }
 
-/** Private response; id is a capability and must never appear in the public feed. */
+/** id is Coco's operation ID, also used in the public donation feed. */
 export interface DonationPayment {
   id: string;
   amountSats: number;
@@ -70,7 +70,7 @@ export interface DonationFeed {
 export function isDonationPayment(value: unknown): value is DonationPayment {
   if (!value || typeof value !== "object") return false;
   const v = value as DonationPayment;
-  return typeof v.id === "string" && /^[0-9a-f-]{36}$/.test(v.id)
+  return typeof v.id === "string" && v.id.length > 0
     && Number.isSafeInteger(v.amountSats) && v.amountSats > 0
     && typeof v.invoice === "string" && v.invoice.length > 0
     && (v.expiresAt === null || Number.isSafeInteger(v.expiresAt))

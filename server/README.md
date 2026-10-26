@@ -8,7 +8,7 @@ Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API pr
 | --- | --- |
 | `POST /donate` | Create a Coco quote/operation, save donor metadata, then return its invoice. |
 | `GET /donate/limits` | Read the mint’s BOLT11/sat donation bounds through Coco. |
-| `GET /donate/:id` | Read private payment status from local persistence. |
+| `GET /donate/:id` | Read payment status and invoice by Coco operation ID. |
 | `GET /donations` | Read the current confirmed donation list, count and sum. |
 | `GET /healthz` | HTTP health check, available after startup completes. |
 
@@ -26,7 +26,7 @@ For an attributed donation, include `Authorization: Nostr <base64 JSON event>`. 
 
 Creation awaits Coco quote creation and operation preparation, then commits the donation metadata before returning 201. On failure it returns an error; the user may request a new invoice. A failure before the app insert can leave an unused Coco operation. A lost response after the insert can leave an unused donation record. Neither invoice is shown by this client. Such records are excluded from public totals unless the associated operation actually completes successfully.
 
-The response has `id`, `amountSats`, `invoice`, `expiresAt`, `status`, and `paymentReceived`. The invoice is always present in a successful response. `expiresAt` is Unix milliseconds or null. The unpredictable `id` grants access to status and the invoice: keep it private. Public feed IDs are separate. The browser keeps the current payment reference in memory and polls its status while the invoice is displayed. Reloading the page returns to the donation form. Coco continues tracking and collecting issued invoices independently of the browser.
+The response has `id`, `amountSats`, `invoice`, `expiresAt`, `status`, and `paymentReceived`. `id` is Coco's operation ID, an opaque string also used in the public feed and for status lookups. Anyone with this ID can read the invoice and payment status; the mint quote ID stays internal. The invoice is always present in a successful response. `expiresAt` is Unix milliseconds or null. The browser keeps the current payment reference in memory and polls its status while the invoice is displayed. Reloading the page returns to the donation form. Coco continues tracking and collecting issued invoices independently of the browser.
 
 The response states `pending`, `paid`, `confirmed`, `review`, and `failed` are derived from Coco on each read. `paid` means payment was observed while collection is unfinished. Only `finalized` operations without an error become `confirmed` and count toward totals. An exceptional finalization goes to `review`; the payer is told not to pay again. Local expiry hides payment controls but does not discard the record or prevent late payment recovery.
 
@@ -34,7 +34,7 @@ The public feed is `{ donations, donationCount, donationTotal }`. Each entry con
 
 ## Persistence and limits
 
-The donations table has five columns: private `id`, `public_id`, `operation_id`, `message`, and nullable `donor_pubkey`. Coco owns the invoice, amount, expiry, payment state, errors and timestamps. Status and feed requests use Coco's local operation/quote lookups. The public feed is built from successful linked operations, with its count and sum calculated from the returned entries. Missing wallet records fail the read instead of silently reducing totals.
+The donations table has three columns: primary key `operation_id`, `message`, and nullable `donor_pubkey`. The operation ID identifies the donation throughout persistence, API responses and the public feed. Coco owns the invoice, amount, expiry, payment state, errors and timestamps. Status and feed requests use Coco's local operation/quote lookups. The public feed is built from successful linked operations, with its count and sum calculated from the returned entries. Missing wallet records fail the read instead of silently reducing totals.
 
 Coco's default watchers/processors observe the mint and collect paid quotes; its startup recovery resumes persisted operations. There is no application payment projection, event-replay requirement, reconciliation worker or retry queue. Paid operations that remain stalled or finalize with an error require operator investigation through Coco. Browser polling never calls the mint.
 
@@ -46,9 +46,11 @@ A limited request returns HTTP 429 with the existing JSON error and `Retry-After
 
 Migration `0001_drop_rate_limits.sql` removes the obsolete counter table without touching donation records or wallet binding.
 
+Migration `0002_operation_id_primary_key.sql` retains each operation ID, message and donor pubkey while removing the redundant donation/public ID columns. Wallet binding and Coco's database remain intact. Previous app-generated IDs stop resolving; reload the donation page to use the new API, and use operation IDs for any message-hiding entries.
+
 `MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at Minibits, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
 
-This draft has not been deployed, so its initial migration was regenerated for the five-column schema. If you ran an earlier draft locally, use a fresh development data directory and seed; retain the earlier wallet if it contains funds.
+This draft has not been deployed. Development instances using the previous five-column schema upgrade automatically. Drafts predating that schema need a fresh development data directory and seed; retain an earlier wallet if it contains funds.
 
 ## Configuration
 
@@ -93,7 +95,7 @@ Back up both databases as one generation, along with the deployed version and mi
 
 For a portable filesystem backup, stop the API gracefully and verify it has exited, then archive the entire data directory, including any remaining `-wal` and `-shm` files. Restart only after the copy finishes. Never copy just live SQLite main files: uncheckpointed WAL entries can contain funds or donation associations. A consistent snapshot of the entire stopped volume is also suitable. On Fly, disable proxy autostart during planned backup/restore maintenance so a request cannot restart the writer, wait for the machine to be stopped, and snapshot its whole volume before resuming it. Use the provider's volume snapshot/export facilities for the off-machine copy.
 
-Restore into a separate, private environment with the same pinned packages, mint and original seed. Stop the original writer before starting a restored wallet: never run two active copies. Restore the complete pair/WAL files to an empty data directory, run SQLite `PRAGMA integrity_check` on each, then start the service. Confirm `/healthz`, the public total/count, known private status references, and Coco's recovered balance/operations before switching traffic. Restore testing must not publish a second donation endpoint. Never discard a current wallet database merely to make a fingerprint check pass.
+Restore into a separate, private environment with the same pinned packages, mint and original seed. Stop the original writer before starting a restored wallet: never run two active copies. Restore the complete pair/WAL files to an empty data directory, run SQLite `PRAGMA integrity_check` on each, then start the service. Confirm `/healthz`, the public total/count, known operation IDs through the status endpoint, and Coco's recovered balance/operations before switching traffic. Restore testing must not publish a second donation endpoint. Never discard a current wallet database merely to make a fingerprint check pass.
 
 For app-level triage, query the metadata database through a private shell with a read-only SQLite connection. This prints counts of stored requests and attributed donors, including unpaid invoices. Payment totals and states must be inspected through Coco or the HTTP read endpoints:
 
@@ -112,4 +114,4 @@ Wallet balance inspection and eventual prize transfers belong to a private opera
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
 
-The current backend passes 25 tests, including mint-supplied amount bounds, refreshed capabilities, absent bounds, Hono middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. Seven frontend tests, type checks, lint and the production build also pass. Browser checks cover loading/retrying limits, invalid responses, disabled presets, boundary validation, amounts above the old app cap, an absent maximum and mobile layout with mocked API responses. In-memory rate limits intentionally reset on restart; they assume the existing single API process.
+The current backend passes 25 tests, including operation IDs shared across creation/status/feed responses, internal quote IDs, mint-supplied amount bounds, refreshed capabilities, absent bounds, Hono middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. Eight frontend tests cover opaque Coco operation IDs and donation totals. Type checks, lint and the production build also pass. Browser checks cover loading/retrying limits, invalid responses, disabled presets, boundary validation, amounts above the old app cap, an absent maximum and mobile layout with mocked API responses. In-memory rate limits intentionally reset on restart; they assume the existing single API process.

@@ -30,7 +30,7 @@ export class CocoFixture {
           const quoteId = crypto.randomUUID();
           const quote: MintQuote<"bolt11"> = {
             quoteId, quote: quoteId, mintUrl: input.mintUrl, method: "bolt11", unit,
-            amount, request: `lnbc-test-${quoteId}`, expiry: Math.floor(Date.now() / 1000) + 60,
+            amount, request: `lnbc-test-${crypto.randomUUID()}`, expiry: Math.floor(Date.now() / 1000) + 60,
             createdAt: Date.now(), updatedAt: Date.now(), state: "UNPAID", reusable: false,
             amountPaid: toAmount(0), amountIssued: toAmount(0), remoteUpdatedAt: null,
             quoteData: { amount },
@@ -47,7 +47,8 @@ export class CocoFixture {
         prepare: async ({ quote: ref }) => {
           const quote = this.quotes.get(ref.quoteId)!;
           const operation: PendingMintOperation = {
-            id: crypto.randomUUID(), amount: quote.amount, request: quote.request,
+            id: Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64url"),
+            amount: quote.amount, request: quote.request,
             expiry: quote.expiry, createdAt: Date.now(), updatedAt: Date.now(),
             state: "pending", mintUrl: quote.mintUrl, quoteId: quote.quoteId,
             method: "bolt11", methodData: {}, unit: "sat", outputData: { keep: [], send: [] },

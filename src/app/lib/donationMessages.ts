@@ -1,5 +1,5 @@
 // Add public donation IDs from GET /donations to hide their messages on this site.
-// Use the public feed ID, not the private payment reference. Amounts still count.
+// These are Coco operation IDs, also used for payment status. Amounts still count.
 export const HIDDEN_DONATION_MESSAGE_IDS = new Set<string>([]);
 
 export {

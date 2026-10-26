@@ -2,9 +2,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 // Payment data belongs to Coco. This table only associates an operation with its donor metadata.
 export const donations = sqliteTable("donations", {
-  id: text("id").primaryKey(),
-  publicId: text("public_id").notNull().unique(),
-  operationId: text("operation_id").notNull().unique(),
+  operationId: text("operation_id").primaryKey(),
   message: text("message").notNull(),
   donorPubkey: text("donor_pubkey"),
 });

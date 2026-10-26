@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDonationStore, parseDonationFeed } from '../src/app/lib/donations.ts';
-import { getDonationMessagePreview } from '../shared/donations.ts';
+import { getDonationMessagePreview, isDonationPayment } from '../shared/donations.ts';
 
 const item = (amount = 1001, id = 'one') => ({ id, amount, content: 'LFG!', createdAt: 1790000000, donorPubkey: null });
 const feed = (...donations) => ({ donations, donationCount: donations.length, donationTotal: donations.reduce((sum, d) => sum + d.amount, 0) });
+
+test('payment responses accept opaque Coco operation IDs instead of requiring UUIDs', () => {
+  const payment = { id: 'zY1pQ_t7Vf-A3k2mX9nL4w', amountSats: 21, invoice: 'lnbc-test', expiresAt: null, status: 'pending', paymentReceived: false };
+  assert.equal(isDonationPayment(payment), true);
+  assert.equal(parseDonationFeed(feed(item(21, payment.id))).donations[0].id, payment.id);
+  for (const id of ['', null, undefined, 42]) assert.equal(isDonationPayment({ ...payment, id }), false);
+});
+
 function harness({ cached = null, unavailable = false } = {}) {
   let raw = JSON.stringify(cached);
   let handlers;

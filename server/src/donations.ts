@@ -81,13 +81,13 @@ export function parseDonationRequest(value: unknown, limits: DonationLimits): Do
   };
 }
 
-function payment(row: DonationRow, operation: PreparedOperation, quote: MintQuote): DonationPayment {
+function payment(operation: PreparedOperation, quote: MintQuote): DonationPayment {
   const received = !quote.amountPaid.isZero() || !quote.amountIssued.isZero() || operation.state === "finalized";
   let status: DonationStatus = received ? "paid" : "pending";
   if (operation.state === "finalized") status = operation.error ? "review" : "confirmed";
   if (operation.state === "failed") status = received ? "review" : "failed";
   return {
-    id: row.id,
+    id: operation.id,
     amountSats: operation.amount.toNumber(),
     invoice: operation.request,
     expiresAt: operation.expiry && operation.expiry > 0 ? operation.expiry * 1000 : null,
@@ -111,15 +111,13 @@ export class DonationService {
     const result = this.creationQueue.then(async () => {
       const { op, quote } = await createInvoice(this.coco, this.config.maxPending, input.amountSats);
       const row: DonationRow = {
-        id: crypto.randomUUID(),
-        publicId: crypto.randomUUID(),
         operationId: op.id,
         message: input.message,
         donorPubkey,
       };
       // The invoice is exposed only after the donor metadata has been committed.
       this.store.insert(row);
-      return payment(row, op, quote);
+      return payment(op, quote);
     });
     this.creationQueue = result.catch(() => {});
     return result;
@@ -131,7 +129,7 @@ export class DonationService {
     const row = this.store.get(id);
     if (!row) throw new ApiError(404, "not_found", "Donation not found.");
     const { op, quote } = await this.operation(row);
-    return payment(row, op, quote);
+    return payment(op, quote);
   }
 
   async feed(): Promise<DonationFeed> {
@@ -140,7 +138,7 @@ export class DonationService {
       if (op.state !== "finalized" || op.error) return null;
       const amount = op.amount.toNumber();
       return {
-        id: row.publicId,
+        id: row.operationId,
         amount,
         content: getDonationMessagePreview(amount, row.message),
         createdAt: Math.floor(op.updatedAt / 1000),
