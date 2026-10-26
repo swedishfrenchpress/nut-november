@@ -1,12 +1,12 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { cors } from "hono/cors";
 import { rateLimiter } from "hono-rate-limiter";
 import type { DonationRequest } from "../../shared/donations.ts";
 import type { Config } from "./config.ts";
 import { DonationService, parseDonationRequest } from "./donations.ts";
 import { ApiError } from "./errors.ts";
 import { sha256, verifyDonorIdentity } from "./identity.ts";
+import { corsMiddleware, responseHeaders } from "./middleware.ts";
 
 type Env = {
   Bindings: { clientIp: string };
@@ -18,18 +18,7 @@ export function createApp(
   config: Pick<Config, "origins" | "publicUrl">,
 ) {
   const app = new Hono<Env>();
-  app.use("*", async (c, next) => {
-    c.header("Cache-Control", "no-store");
-    c.header("X-Content-Type-Options", "nosniff");
-    const origin = c.req.header("origin");
-    if (origin && !config.origins.includes(origin)) {
-      c.header("Vary", "Origin");
-      throw new ApiError(403, "origin", "Origin is not allowed.");
-    }
-    await next();
-  });
-  app.use("*", cors({ origin: config.origins, allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"], exposeHeaders: ["Retry-After"], maxAge: 600 }));
+  app.use("*", responseHeaders, corsMiddleware(config.origins));
   app.onError((error, c) => {
     if (error instanceof ApiError) {
       return c.json({ error: { code: error.code, message: error.message } }, error.status);
