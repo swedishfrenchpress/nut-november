@@ -53,7 +53,7 @@ export default function PaymentDisplay({ payment, checking, error, onBack }: Pay
   return (
     <div className="flex flex-col items-center gap-6 text-center">
       {payable && <p className="text-lg font-medium text-bark">
-        {cashu ? "Scan with a Cashu wallet using the Minibits Bitcoin mint to send " : "Scan with any Lightning wallet to send "}
+        {cashu ? "Scan with a Cashu wallet to send " : "Scan with any Lightning wallet to send "}
         <strong className="font-semibold tabular-nums">{formatSats(amount)}</strong>.
       </p>}
 

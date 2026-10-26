@@ -155,7 +155,6 @@ function Page() {
                   </label>
                 ))}
               </div>
-              {paymentMethod === "cashu" && <p className={`${fieldHint} mt-3`}>Pay with ecash from the Minibits Bitcoin mint.</p>}
             </fieldset>
             <fieldset disabled={isSubmitting || !limits}>
               <legend className={fieldLabel}>Pick an amount</legend>
