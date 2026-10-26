@@ -1,11 +1,13 @@
 import type { Manager, MintOperation, MintQuote } from "@cashu/coco-core";
 import {
   canIncludeDonationMessage,
-  DONATION_MIN_SATS,
-  DONATION_MAX_SATS,
+  donationAmountHint,
+  isDonationAmount,
+  isDonationLimits,
   DONATION_MESSAGE_INPUT_LIMIT,
   getDonationMessagePreview,
   type DonationFeed,
+  type DonationLimits,
   type DonationPayment,
   type DonationRequest,
   type DonationStatus,
@@ -13,38 +15,52 @@ import {
 import { ApiError } from "./errors.ts";
 import type { DonationRow } from "./schema.ts";
 import { DonationStore } from "./store.ts";
-import type { Config } from "./config.ts";
+import { MINT_URL, type Config } from "./config.ts";
 
 type PreparedOperation = Exclude<MintOperation, { state: "init" }>;
 
 // Use Coco directly, while requiring only the methods this module calls.
 export type DonationCoco = {
+  mint: Pick<Manager["mint"], "checkPaymentMethodCapability">;
   quotes: { mint: Pick<Manager["quotes"]["mint"], "create" | "get" | "listPending"> };
   ops: { mint: Pick<Manager["ops"]["mint"], "prepare" | "get"> };
 };
 
-function assertOperation(op: MintOperation, quote: MintQuote, mintUrl: string): asserts op is PreparedOperation {
+export async function readDonationLimits(mint: Pick<Manager["mint"], "checkPaymentMethodCapability">): Promise<DonationLimits> {
+  const capability = await mint.checkPaymentMethodCapability({
+    mintUrl: MINT_URL, operation: "mint", method: "bolt11", unit: "sat",
+  });
+  if (!capability.supported) throw new Error("Mint does not support BOLT11/sat donations");
+  const limits = {
+    minSats: Math.max(1, capability.minAmount?.toNumber() ?? 1),
+    maxSats: capability.maxAmount?.toNumber() ?? null,
+  };
+  if (!isDonationLimits(limits)) throw new Error("Mint has no usable BOLT11/sat donation range");
+  return limits;
+}
+
+function assertOperation(op: MintOperation, quote: MintQuote): asserts op is PreparedOperation {
   if (
-    op.state === "init" || op.method !== "bolt11" || op.unit !== "sat" || op.mintUrl !== mintUrl
-    || quote.method !== "bolt11" || quote.unit !== "sat" || quote.mintUrl !== mintUrl
+    op.state === "init" || op.method !== "bolt11" || op.unit !== "sat" || op.mintUrl !== MINT_URL
+    || quote.method !== "bolt11" || quote.unit !== "sat" || quote.mintUrl !== MINT_URL
     || op.quoteId !== quote.quoteId || !op.amount.equals(quote.amount)
   ) {
     throw new Error("Unexpected mint operation");
   }
 }
 
-async function createInvoice(coco: DonationCoco, mintUrl: string, maxPending: number, amount: number) {
+async function createInvoice(coco: DonationCoco, maxPending: number, amount: number) {
   const pending = await coco.quotes.mint.listPending({ method: "bolt11" });
-  if (pending.filter((quote) => quote.mintUrl === mintUrl).length >= maxPending) {
+  if (pending.filter((quote) => quote.mintUrl === MINT_URL).length >= maxPending) {
     throw new ApiError(503, "capacity", "Invoice creation is temporarily unavailable. Please try again later.");
   }
-  const quote = await coco.quotes.mint.create({ mintUrl, method: "bolt11", unit: "sat", amount, locked: true });
-  const op = await coco.ops.mint.prepare({ quote: { mintUrl, quoteId: quote.quoteId, method: "bolt11" }, amount });
-  assertOperation(op, quote, mintUrl);
+  const quote = await coco.quotes.mint.create({ mintUrl: MINT_URL, method: "bolt11", unit: "sat", amount, locked: true });
+  const op = await coco.ops.mint.prepare({ quote: { mintUrl: MINT_URL, quoteId: quote.quoteId, method: "bolt11" }, amount });
+  assertOperation(op, quote);
   return { op, quote };
 }
 
-export function parseDonationRequest(value: unknown): DonationRequest {
+export function parseDonationRequest(value: unknown, limits: DonationLimits): DonationRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ApiError(400, "invalid_request", "Invalid donation request.");
   }
@@ -53,11 +69,8 @@ export function parseDonationRequest(value: unknown): DonationRequest {
     throw new ApiError(400, "invalid_request", "Unknown donation field.");
   }
   const { amountSats, message = "" } = input;
-  if (
-    typeof amountSats !== "number" || !Number.isSafeInteger(amountSats)
-    || amountSats < DONATION_MIN_SATS || amountSats > DONATION_MAX_SATS
-  ) {
-    throw new ApiError(400, "invalid_amount", `Enter a whole number of sats between ${DONATION_MIN_SATS} and ${DONATION_MAX_SATS}.`);
+  if (!isDonationAmount(amountSats, limits)) {
+    throw new ApiError(400, "invalid_amount", donationAmountHint(limits));
   }
   if (typeof message !== "string" || message.length > DONATION_MESSAGE_INPUT_LIMIT) {
     throw new ApiError(400, "invalid_message", "Message must be at most 280 characters.");
@@ -88,13 +101,15 @@ export class DonationService {
   constructor(
     private store: DonationStore,
     private coco: DonationCoco,
-    private config: Pick<Config, "mintUrl" | "maxPending">,
+    private config: Pick<Config, "maxPending">,
   ) {}
+
+  limits() { return readDonationLimits(this.coco.mint); }
 
   async create(input: DonationRequest, donorPubkey: string | null): Promise<DonationPayment> {
     // Serialize admission and Coco's NUT-20 key allocation, including abandoned quotes.
     const result = this.creationQueue.then(async () => {
-      const { op, quote } = await createInvoice(this.coco, this.config.mintUrl, this.config.maxPending, input.amountSats);
+      const { op, quote } = await createInvoice(this.coco, this.config.maxPending, input.amountSats);
       const row: DonationRow = {
         id: crypto.randomUUID(),
         publicId: crypto.randomUUID(),
@@ -146,7 +161,7 @@ export class DonationService {
     if (!op) throw new ApiError(503, "wallet_record_missing", "Payment information is temporarily unavailable.");
     const quote = await this.coco.quotes.mint.get({ mintUrl: op.mintUrl, quoteId: op.quoteId });
     if (!quote) throw new Error("Mint operation has no stored quote");
-    assertOperation(op, quote, this.config.mintUrl);
+    assertOperation(op, quote);
     return { op, quote };
   }
 }

@@ -2,7 +2,7 @@
 
 import type { WindowNostr } from "nostr-tools/nip07";
 import Link from "next/link";
-import { FormEvent, useRef, useState, useSyncExternalStore } from "react";
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import PacketPage, {
   PoolAmount,
   field,
@@ -20,8 +20,8 @@ import {
 import SuccessMessage from "./components/SuccessMessage";
 import InvoiceDisplay from "./components/InvoiceDisplay";
 import { useDonationPayment } from "./hooks/useDonationPayment";
-import { createDonation, signDonationRequest } from "../lib/donationApi";
-import { DONATION_MAX_SATS, type DonationPayment, type DonationRequest } from "../../../shared/donations";
+import { createDonation, getDonationLimits, signDonationRequest } from "../lib/donationApi";
+import { donationAmountHint, isDonationAmount, type DonationLimits, type DonationPayment, type DonationRequest } from "../../../shared/donations";
 
 const PRESETS = [21, 1000, 21000];
 function hasNostrSigner() {
@@ -41,6 +41,9 @@ function subscribeToSigner(onChange: () => void) {
 function Page() {
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
+  const [limits, setLimits] = useState<DonationLimits | null>(null);
+  const [limitsError, setLimitsError] = useState(false);
+  const [limitsAttempt, setLimitsAttempt] = useState(0);
   const canAddMessage = Number.isInteger(Number(amount)) && canIncludeDonationMessage(Number(amount));
   const [error, setError] = useState<string | null>(null);
   const [preferredIdentity, setIdentity] = useState<"anonymous" | "profile">("anonymous");
@@ -53,14 +56,24 @@ function Page() {
   const submitting = useRef(false);
   const { payment, checking, error: paymentError } = useDonationPayment(initialPayment);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    getDonationLimits(controller.signal).then((value) => {
+      if (!controller.signal.aborted) setLimits(value);
+    }).catch(() => {
+      if (!controller.signal.aborted) setLimitsError(true);
+    });
+    return () => controller.abort();
+  }, [limitsAttempt]);
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (submitting.current) return;
+    if (submitting.current || !limits) return;
 
     setSubmissionError(null);
     const sats = Number(amount);
-    if (!Number.isSafeInteger(sats) || sats < 1 || sats > DONATION_MAX_SATS) {
-      setError(`Enter a whole number of sats from 1 to ${DONATION_MAX_SATS.toLocaleString("en-US")}.`);
+    if (!isDonationAmount(sats, limits)) {
+      setError(donationAmountHint(limits));
       return;
     }
 
@@ -128,7 +141,7 @@ function Page() {
           <InvoiceDisplay payment={payment} checking={checking} error={paymentError} onBack={handleBack} />
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
-            <fieldset disabled={isSubmitting}>
+            <fieldset disabled={isSubmitting || !limits}>
               <legend className={fieldLabel}>Pick an amount</legend>
               <div className="mt-3 grid grid-cols-3 gap-3">
                 {PRESETS.map((p) => {
@@ -137,12 +150,13 @@ function Page() {
                     <button
                       key={p}
                       type="button"
+                      disabled={!limits || !isDonationAmount(p, limits)}
                       aria-pressed={on}
                       onClick={() => {
                         setAmount(String(p));
                         setError(null);
                       }}
-                      className={`border-2 border-bark px-2 py-3 text-base font-bold tabular-nums transition-colors sm:text-lg ${
+                      className={`border-2 border-bark px-2 py-3 text-base font-bold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:text-lg ${
                         on ? "bg-bark text-cream" : "bg-cream text-bark hover:bg-white"
                       }`}
                     >
@@ -163,10 +177,10 @@ function Page() {
                   name="amount"
                   type="number"
                   inputMode="numeric"
-                  min={1}
-                  max={DONATION_MAX_SATS}
+                  min={limits?.minSats}
+                  max={limits?.maxSats ?? undefined}
                   step={1}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !limits}
                   value={amount}
                   onChange={(e) => {
                     setAmount(e.target.value);
@@ -188,8 +202,13 @@ function Page() {
                   {error}
                 </p>
               ) : (
-                <p id="amount-hint" className={fieldHint}>
-                  You&apos;ll get a Lightning invoice to pay from any wallet.
+                <p id="amount-hint" role={limitsError ? "alert" : undefined} className={limitsError ? fieldError : fieldHint}>
+                  {limits ? donationAmountHint(limits) : limitsError ? (
+                    <>We couldn&apos;t load donation amounts. <button type="button" className="underline" onClick={() => {
+                      setLimitsError(false);
+                      setLimitsAttempt((attempt) => attempt + 1);
+                    }}>Try again</button></>
+                  ) : "Loading donation amounts…"}
                 </p>
               )}
             </div>
@@ -253,7 +272,7 @@ function Page() {
               <p role="alert" className={fieldError}>{submissionError}</p>
             )}
 
-            <button type="submit" disabled={isSubmitting} className={`${primaryButton} mt-2 self-center`}>
+            <button type="submit" disabled={isSubmitting || !limits} className={`${primaryButton} mt-2 self-center`}>
               {submission === "signing" ? "Confirm in your extension…" : submission === "invoice" ? "Creating invoice…" : "Get invoice"}
             </button>
           </form>

@@ -1,4 +1,4 @@
-import { isDonationPayment, type DonationPayment, type DonationRequest } from "../../../shared/donations.ts";
+import { isDonationLimits, isDonationPayment, type DonationLimits, type DonationPayment, type DonationRequest } from "../../../shared/donations.ts";
 import type { EventTemplate } from "nostr-tools";
 import type { WindowNostr } from "nostr-tools/nip07";
 
@@ -34,6 +34,14 @@ export async function createDonation(request: DonationRequest, authorization?: s
 export async function getDonation(id: string, signal?: AbortSignal): Promise<DonationPayment> {
   return readPayment(await fetch(`${DONATION_API_URL}/donate/${encodeURIComponent(id)}`, { cache: "no-store",
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000) }));
+}
+
+export async function getDonationLimits(signal: AbortSignal): Promise<DonationLimits> {
+  const response = await fetch(`${DONATION_API_URL}/donate/limits`, { cache: "no-store",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) });
+  const value = await response.json();
+  if (!response.ok || !isDonationLimits(value)) throw new Error("Donation limits are unavailable.");
+  return value;
 }
 
 export function refreshDonations() { window.dispatchEvent(new Event("donations:refresh")); }

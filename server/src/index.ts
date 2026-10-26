@@ -3,12 +3,11 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { initializeCoco } from "@cashu/coco-core";
 import { SqliteRepositories } from "@cashu/coco-sqlite-bun";
-import { readConfig } from "./config.ts";
+import { MINT_URL, readConfig } from "./config.ts";
 import { sha256 } from "./identity.ts";
 import { DonationStore } from "./store.ts";
-import { DonationService } from "./donations.ts";
+import { DonationService, readDonationLimits } from "./donations.ts";
 import { createApp } from "./http.ts";
-import { DONATION_MIN_SATS, DONATION_MAX_SATS } from "../../shared/donations.ts";
 
 process.umask(0o077);
 const config = readConfig();
@@ -17,7 +16,7 @@ chmodSync(config.dataDir, 0o700);
 const walletPath = join(config.dataDir, "coco.sqlite");
 const walletAlreadyExists = existsSync(walletPath) && statSync(walletPath).size > 0;
 const store = new DonationStore(join(config.dataDir, "app.sqlite"));
-store.bindWallet(sha256(config.seed), config.mintUrl, walletAlreadyExists);
+store.bindWallet(sha256(config.seed), MINT_URL, walletAlreadyExists);
 const cocoDatabase = new Database(walletPath, { create: true });
 cocoDatabase.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
 const coco = await initializeCoco({
@@ -25,19 +24,10 @@ const coco = await initializeCoco({
   seedGetter: async () => config.seed,
 });
 try {
-  if (!(await coco.mint.isTrustedMint(config.mintUrl))) {
-    await coco.mint.addMint(config.mintUrl, { trusted: true });
+  if (!(await coco.mint.isTrustedMint(MINT_URL))) {
+    await coco.mint.addMint(MINT_URL, { trusted: true });
   }
-  const capability = await coco.mint.checkPaymentMethodCapability({
-    mintUrl: config.mintUrl, operation: "mint", method: "bolt11", unit: "sat",
-  });
-  if (
-    !capability.supported
-    || (capability.minAmount && capability.minAmount.toNumber() > DONATION_MIN_SATS)
-    || (capability.maxAmount && capability.maxAmount.toNumber() < DONATION_MAX_SATS)
-  ) {
-    throw new Error("Donation limits are incompatible with mint BOLT11/sat capabilities");
-  }
+  await readDonationLimits(coco.mint);
 } catch (error) {
   await coco.dispose();
   cocoDatabase.close();

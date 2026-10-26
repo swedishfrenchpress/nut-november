@@ -1,5 +1,6 @@
 import { parseUnitAmount, toAmount, type MintOperation, type MintQuote, type PendingMintOperation } from "@cashu/coco-core";
 import type { DonationCoco } from "../../src/donations.ts";
+import type { DonationLimits } from "../../../shared/donations.ts";
 
 // Simulates the methods used by the app; does not exercise Coco recovery or storage.
 export class CocoFixture {
@@ -8,9 +9,17 @@ export class CocoFixture {
   creations = 0;
   reads = 0;
   failCreate = false;
+  limits: DonationLimits = { minSats: 1, maxSats: 1_000_000 };
   afterPrepare?: () => Promise<void>;
 
   client: DonationCoco = {
+    mint: {
+      checkPaymentMethodCapability: async () => ({
+        supported: true, disabled: false, operation: "mint", nut: 4, method: "bolt11", unit: "sat",
+        minAmount: toAmount(this.limits.minSats),
+        maxAmount: this.limits.maxSats === null ? null : toAmount(this.limits.maxSats),
+      }),
+    },
     quotes: {
       mint: {
         create: async (input) => {

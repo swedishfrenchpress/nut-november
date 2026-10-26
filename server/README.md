@@ -7,6 +7,7 @@ Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API pr
 | Route | Behavior |
 | --- | --- |
 | `POST /donate` | Create a Coco quote/operation, save donor metadata, then return its invoice. |
+| `GET /donate/limits` | Read the mint’s BOLT11/sat donation bounds through Coco. |
 | `GET /donate/:id` | Read private payment status from local persistence. |
 | `GET /donations` | Read the current confirmed donation list, count and sum. |
 | `GET /healthz` | Process liveness. |
@@ -18,7 +19,9 @@ Example anonymous request:
 {"amountSats":2100,"message":"Go nuts!"}
 ```
 
-Every submission requests a new invoice, including identical submissions after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are whole sats from 1 to 1,000,000, using the same fixed limits as the frontend in `shared/donations.ts`; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
+Every submission requests a new invoice, including identical submissions after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are positive whole sats within the mint’s advertised BOLT11/sat minting bounds; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
+
+`GET /donate/limits` returns `{ minSats, maxSats }`. The backend reads these bounds through Coco’s payment-method capability API on startup, limit reads and invoice validation, leaving mint-info caching and refresh to Coco. An absent or zero minimum becomes one sat; an absent maximum is returned as null. Amounts must be JavaScript safe integers. The frontend loads these bounds before enabling invoice requests and disables presets outside the range. Unsupported minting or an unusable range prevents startup.
 
 For an attributed donation, include `Authorization: Nostr <base64 JSON event>`. The NIP-98 event must have kind 27235, empty content, a valid ID/signature, a timestamp within 60 seconds, and exactly one each of `u`, `method`, and `payload`. They must equal the configured public `/donate` URL, `POST`, and SHA-256 of the exact request bytes. The pubkey comes only from the verified signature. No authorization means anonymous; invalid authorization returns 401. The signature proves the request author, independently of which Lightning wallet pays.
 
@@ -44,17 +47,17 @@ A limited request returns HTTP 429 with the existing JSON error and `Retry-After
 
 Migration `0001_drop_rate_limits.sql` removes the obsolete counter table without touching donation records or wallet binding.
 
-`MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at the configured mint, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
+`MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at Minibits, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
 
 This draft has not been deployed, so its initial migration was regenerated for the five-column schema. If you ran an earlier draft locally, use a fresh development data directory and seed; retain the earlier wallet if it contains funds.
 
 ## Configuration
 
-Donation amount limits come from `shared/donations.ts`. The former `MIN_DONATION_SATS` and `MAX_DONATION_SATS` environment overrides are no longer read; remove them from existing environment files. `MAX_PENDING_DONATIONS` remains configurable.
+The mint is fixed to `https://mint.minibits.cash/Bitcoin` in `src/config.ts`. Donation amount limits come from its BOLT11/sat minting capabilities. `MINT_URL`, `MIN_DONATION_SATS` and `MAX_DONATION_SATS` environment overrides are no longer read; remove them from existing environment files. `MAX_PENDING_DONATIONS` remains configurable.
 
 Start from [.env.example](.env.example). `COCO_SEED_HEX` is required and must be exactly 128 hex characters (64 bytes). Keep it stable, backed up separately from the databases, and out of logs/source control. Startup validates mint capabilities and stores the seed fingerprint and mint URL in the app database. A changed seed/mint, a wallet without its app identity, or a missing wallet alongside existing donations stops startup. These checks catch common configuration errors; restoration still requires the matching database pair.
 
-The service uses WAL, restrictive data-directory/file permissions, and graceful SIGTERM/SIGINT shutdown. Coco recovery runs on startup before serving donations. The mint is `https://mint.minibits.cash/Bitcoin` by default. Changing it is a wallet migration, not a routine configuration edit.
+The service uses WAL, restrictive data-directory/file permissions, and graceful SIGTERM/SIGINT shutdown. Coco recovery runs on startup before serving donations. Changing the fixed mint requires a code change and a wallet migration.
 
 ## Fly deployment
 
@@ -110,4 +113,4 @@ Wallet balance inspection and eventual prize transfers belong to a private opera
 
 If the frontend is rolled back, keep this API and wallet watching already-issued invoices. The legacy donation path has a separate ledger; its payments will not appear in this API's totals. Do not roll back a database across an incompatible migration; restore/rehearse the appropriate version and matching data together.
 
-The Hono refactor passes 21 backend tests, including the new middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. In-memory limits intentionally reset on restart; they assume the existing single API process.
+The current backend passes 25 tests, including mint-supplied amount bounds, refreshed capabilities, absent bounds, Hono middleware behavior, exact-byte NIP-98 verification and migration from the previous donation schema. Seven frontend tests, type checks, lint and the production build also pass. Browser checks cover loading/retrying limits, invalid responses, disabled presets, boundary validation, amounts above the old app cap, an absent maximum and mobile layout with mocked API responses. In-memory rate limits intentionally reset on restart; they assume the existing single API process.

@@ -1,5 +1,3 @@
-export const DONATION_MIN_SATS = 1;
-export const DONATION_MAX_SATS = 1_000_000;
 export const DONATION_MESSAGE_THRESHOLD = 1_000;
 export const DONATION_MESSAGE_INPUT_LIMIT = 280;
 export const DONATION_MESSAGE_DISPLAY_LIMIT = 256;
@@ -14,6 +12,31 @@ export function getDonationMessagePreview(sats: number, content: string): string
 }
 
 export type DonationStatus = "pending" | "paid" | "confirmed" | "review" | "failed";
+
+export interface DonationLimits {
+  minSats: number;
+  /** null when the mint advertises no maximum. */
+  maxSats: number | null;
+}
+
+export function isDonationLimits(value: unknown): value is DonationLimits {
+  if (!value || typeof value !== "object") return false;
+  const v = value as DonationLimits;
+  return Number.isSafeInteger(v.minSats) && v.minSats > 0
+    && (v.maxSats === null || (Number.isSafeInteger(v.maxSats) && v.maxSats >= v.minSats));
+}
+
+export function isDonationAmount(value: unknown, limits: DonationLimits): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= limits.minSats
+    && (limits.maxSats === null || value <= limits.maxSats);
+}
+
+export function donationAmountHint(limits: DonationLimits): string {
+  const min = limits.minSats.toLocaleString("en-US");
+  return limits.maxSats === null
+    ? `Enter a whole number of sats, at least ${min}.`
+    : `Enter a whole number of sats from ${min} to ${limits.maxSats.toLocaleString("en-US")}.`;
+}
 
 export interface DonationRequest {
   amountSats: number;

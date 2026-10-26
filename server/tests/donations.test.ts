@@ -4,25 +4,29 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { finalizeEvent, getPublicKey } from "nostr-tools";
+import { toAmount } from "@cashu/coco-core";
 import { DonationStore } from "../src/store.ts";
-import { DonationService } from "../src/donations.ts";
+import { DonationService, readDonationLimits } from "../src/donations.ts";
+import { MINT_URL } from "../src/config.ts";
 import { createApp } from "../src/http.ts";
 import { sha256 } from "../src/identity.ts";
-import type { DonationPayment, DonationRequest } from "../../shared/donations.ts";
+import type { DonationLimits, DonationPayment, DonationRequest } from "../../shared/donations.ts";
 
-const config = { mintUrl: "https://mint.example", origins: ["https://nutnovember.org"],
+const config = { origins: ["https://nutnovember.org"],
   publicUrl: "https://api.nutnovember.org", maxPending: 1000 };
+const defaultLimits: DonationLimits = { minSats: 1, maxSats: 1_000_000 };
 const key = new Uint8Array(32).fill(1);
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
-function harness(maxPending = config.maxPending) {
+function harness(maxPending = config.maxPending, limits = defaultLimits) {
   const dir = mkdtempSync(join(tmpdir(), 'nut-donation-test-'));
   const filename = join(dir, 'app.sqlite');
   const coco = new CocoFixture();
-  const limits = { ...config, maxPending };
+  coco.limits = limits;
+  const serviceConfig = { maxPending };
   let store = new DonationStore(filename);
-  let service = new DonationService(store, coco.client, limits);
+  let service = new DonationService(store, coco.client, serviceConfig);
   let app = createApp(service, config);
   cleanups.push(async () => { await service.drain(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return {
@@ -30,7 +34,7 @@ function harness(maxPending = config.maxPending) {
     // Reopen app persistence; the fake wallet stays in memory.
     restart() {
       store.close(); store = new DonationStore(filename);
-      service = new DonationService(store, coco.client, limits);
+      service = new DonationService(store, coco.client, serviceConfig);
       app = createApp(service, config);
     },
     request: (request: Request, client = '127.0.0.1') => app.request(request, undefined, { clientIp: client }),
@@ -269,6 +273,63 @@ test('CORS, methods, amount limits, body limits and message policy are enforced'
   }
 });
 
+test('advertised mint bounds drive validation and the public limits endpoint without an app amount cap', async () => {
+  const limits = { minSats: 21, maxSats: 2_000_000 };
+  const h = harness(1000, limits);
+  for (let i = 0; i < 5; i++) {
+    const response = await h.request(new Request(`${config.publicUrl}/donate/limits`, { headers: { Origin: config.origins[0] } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(config.origins[0]);
+    expect(await response.json()).toEqual(limits);
+  }
+  expect(h.coco.creations).toBe(0);
+  for (const amount of [0, 20, 21.5, 2_000_001]) {
+    const response = await h.post(input(amount));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: 'invalid_amount', message: 'Enter a whole number of sats from 21 to 2,000,000.' } });
+  }
+  for (const amount of [21, 1_000_001, 2_000_000]) expect((await h.post(input(amount))).status).toBe(201);
+  expect(h.coco.creations).toBe(3);
+  expect([...h.coco.quotes.values()].every((quote) => quote.mintUrl === MINT_URL)).toBe(true);
+  expect((await h.request(new Request(`${config.publicUrl}/donate/limits`, { method: 'POST' }))).status).toBe(405);
+});
+
+test('an omitted mint maximum permits positive safe integers without an artificial ceiling', async () => {
+  const h = harness(1000, { minSats: 1, maxSats: null });
+  for (const amount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect((await h.post(input(amount))).status).toBe(400);
+  for (const amount of [1, 1_000_001, Number.MAX_SAFE_INTEGER]) expect((await h.post(input(amount))).status).toBe(201);
+});
+
+test('updated Coco capabilities affect both validation and the limits endpoint without restarting', async () => {
+  const h = harness();
+  expect((await h.post(input(1_000_001))).status).toBe(400);
+  h.coco.limits = { minSats: 21, maxSats: 2_000_000 };
+  const response = await h.request(new Request(`${config.publicUrl}/donate/limits`));
+  expect(await response.json()).toEqual(h.coco.limits);
+  expect((await h.post(input(20))).status).toBe(400);
+  expect((await h.post(input(1_000_001))).status).toBe(201);
+});
+
+test('Coco supplies BOLT11 minting limits in sats, including absent bounds', async () => {
+  const capability = { supported: true, disabled: false, operation: 'mint' as const, nut: 4 as const, method: 'bolt11', unit: 'sat' };
+  expect(await readDonationLimits({ checkPaymentMethodCapability: async (request) => {
+    expect(request).toEqual({ mintUrl: MINT_URL, operation: 'mint', method: 'bolt11', unit: 'sat' });
+    return { ...capability, minAmount: toAmount(21), maxAmount: toAmount(2_000_000) };
+  } })).toEqual({ minSats: 21, maxSats: 2_000_000 });
+  expect(await readDonationLimits({ checkPaymentMethodCapability: async () => capability })).toEqual({ minSats: 1, maxSats: null });
+  expect(await readDonationLimits({ checkPaymentMethodCapability: async () => ({ ...capability, minAmount: toAmount(0), maxAmount: null }) }))
+    .toEqual({ minSats: 1, maxSats: null });
+  for (const invalid of [
+    { ...capability, supported: false, disabled: true },
+    { ...capability, supported: false },
+    { ...capability, minAmount: toAmount(21), maxAmount: toAmount(20) },
+    { ...capability, maxAmount: toAmount(0) },
+  ]) {
+    await expect(readDonationLimits({ checkPaymentMethodCapability: async () => invalid })).rejects.toThrow();
+  }
+});
+
 test('three attempts per IP count failures and reset ten minutes after the first attempt', async () => {
   const h = harness();
   setSystemTime(600_001);
@@ -339,17 +400,18 @@ test('Hono preserves exact signed JSON bytes, response headers and health endpoi
   expect((await starting.request('/healthz')).status).toBe(200);
   expect((await starting.request('/readyz')).status).toBe(503);
   expect((await starting.request('/donations')).status).toBe(503);
+  expect((await starting.request('/donate/limits')).status).toBe(503);
   expect((await h.request(new Request(`${config.publicUrl}/missing`))).status).toBe(404);
   expect((await h.request(new Request(`${config.publicUrl}/donations?all=1`))).status).toBe(400);
 });
 
 test('wallet identity guards against the wrong seed and missing database pair', async () => {
   const h = harness();
-  expect(() => h.store.bindWallet('a', config.mintUrl, true)).toThrow();
-  h.store.bindWallet('a', config.mintUrl, false);
-  h.store.bindWallet('a', config.mintUrl, true);
-  expect(() => h.store.bindWallet('b', config.mintUrl, true)).toThrow();
+  expect(() => h.store.bindWallet('a', MINT_URL, true)).toThrow();
+  h.store.bindWallet('a', MINT_URL, false);
+  h.store.bindWallet('a', MINT_URL, true);
+  expect(() => h.store.bindWallet('b', MINT_URL, true)).toThrow();
   expect(() => h.store.bindWallet('a', 'https://other.example', true)).toThrow();
   await h.post(input());
-  expect(() => h.store.bindWallet('a', config.mintUrl, false)).toThrow('Wallet database is missing');
+  expect(() => h.store.bindWallet('a', MINT_URL, false)).toThrow('Wallet database is missing');
 });

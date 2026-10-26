@@ -67,7 +67,7 @@ export function createApp(
       } catch {
         throw new ApiError(400, "invalid_json", "Invalid JSON body.");
       }
-      c.set("donation", parseDonationRequest(value));
+      c.set("donation", parseDonationRequest(value, await service.limits()));
       const identity = verifyDonorIdentity(
         c.req.header("authorization") ?? null, raw, `${config.publicUrl}/donate`,
       );
@@ -77,6 +77,7 @@ export function createApp(
     rateLimiter<Env>({ windowMs: 10 * 60_000, limit: 3, keyGenerator: (c) => sha256(c.env.clientIp), message: limited }),
     rateLimiter<Env>({ windowMs: 60_000, limit: 50, keyGenerator: () => "global", message: limited }),
     async (c) => c.json(await service.create(c.var.donation, c.var.donorPubkey), 201));
+  app.get("/donate/limits", async (c) => c.json(await service.limits()));
   app.get("/donate/:id", async (c) => c.json(await service.get(c.req.param("id"))));
   app.get("/donations", async (c) => c.json(await service.feed()));
   for (const path of ["/donate", "/donate/:id", "/donations"]) {
