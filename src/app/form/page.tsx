@@ -132,9 +132,7 @@ function Page() {
   }
 
   const intro =
-    phase?.kind === "upcoming" ? (
-      `Submissions open on Nov 1.`
-    ) : phase?.kind === "over" ? (
+    phase?.kind === "over" ? (
       "Submissions are closed."
     ) : (
       <>Due {DEADLINE_LABEL}. Unfinished is fine: send what you have.</>
@@ -144,11 +142,6 @@ function Page() {
     <PacketPage title="Submit your project" intro={phase ? intro : null}>
       {phase === null ? (
         <div className="min-h-[40vh]" />
-      ) : phase.kind === "upcoming" ? (
-        <Closed>
-          The hackathon starts in {phase.days} {phase.days === 1 ? "day" : "days"}. Come back then with your
-          project, and pick a prize to aim for in the meantime.
-        </Closed>
       ) : phase.kind === "over" ? (
         <Closed>Nut November 2026 is over. Thanks to everyone who built something. 🌰</Closed>
       ) : (

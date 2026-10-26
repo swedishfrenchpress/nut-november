@@ -8,7 +8,7 @@ import { ApiError } from "./errors.ts";
 import { sha256, verifyDonorIdentity } from "./identity.ts";
 import { corsMiddleware, responseHeaders } from "./middleware.ts";
 import { AppStore } from "./store.ts";
-import { STARTS_AT, ENDS_AT } from "../../shared/hackathon.ts";
+import { ENDS_AT } from "../../shared/hackathon.ts";
 import { SUBMISSION_MAX_BODY_BYTES, validateSubmission, type SubmissionRequest } from "../../shared/submissions.ts";
 
 type Env = {
@@ -80,7 +80,6 @@ export function createApp(
       const parsed = validateSubmission(value);
       if (parsed.errors) throw new ApiError(400, "invalid_submission", Object.values(parsed.errors)[0]!);
       const now = Date.now();
-      if (now < STARTS_AT) throw new ApiError(403, "submissions_closed", "Submissions open on Nov 1, 2026.");
       if (now >= ENDS_AT) throw new ApiError(403, "submissions_closed", "Submissions are closed.");
       c.set("submission", parsed.data);
       await next();

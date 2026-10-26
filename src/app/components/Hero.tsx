@@ -43,7 +43,7 @@ export default function Hero() {
         : phase?.kind === "over"
           ? "Submissions are closed"
           : null;
-  const live = phase?.kind === "live";
+  const submissionsOpen = phase !== null && phase.kind !== "over";
 
   const onPointerMove = (e: ReactPointerEvent<HTMLElement>) => {
     if (e.pointerType !== "mouse") return;
@@ -123,11 +123,11 @@ export default function Hero() {
               </div>
 
               <div className="mt-10 flex flex-col items-center justify-center gap-5 sm:flex-row sm:gap-8">
-                <Link href={live ? "/form" : "#prizes"} className={primaryButton}>
-                  {live ? "Submit your project" : "See the prizes"}
+                <Link href={submissionsOpen ? "/form" : "#prizes"} className={primaryButton}>
+                  {submissionsOpen ? "Submit your project" : "See the prizes"}
                 </Link>
-                <a href={live ? "#prizes" : "#participate"} className={textLink}>
-                  {live ? "See the prizes" : "How it works"}
+                <a href={submissionsOpen ? "#prizes" : "#participate"} className={textLink}>
+                  {submissionsOpen ? "See the prizes" : "How it works"}
                 </a>
               </div>
             </div>
