@@ -14,4 +14,16 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+export const submissions = sqliteTable("submissions", {
+  id: text("id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+  projectName: text("project_name").notNull(),
+  firstContribution: text("first_contribution", { enum: ["yes", "no"] }).notNull(),
+  description: text("description").notNull(),
+  githubRepo: text("github_repo").notNull(),
+  demoLink: text("demo_link").notNull(),
+  contactInfo: text("contact_info").notNull(),
+});
+
 export type DonationRow = typeof donations.$inferSelect;
+export type SubmissionRow = typeof submissions.$inferSelect;

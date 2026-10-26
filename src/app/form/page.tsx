@@ -1,8 +1,8 @@
 "use client";
 
-import { publishForm } from "@/actions/nostr";
+import { submitProject } from "../lib/submissionApi";
 import Link from "next/link";
-import { FormEvent, ReactNode, startTransition, useActionState, useRef, useState } from "react";
+import { FormEvent, ReactNode, useRef, useState } from "react";
 import CircularText from "../components/CircularText";
 import PacketPage, {
   field,
@@ -14,35 +14,10 @@ import PacketPage, {
   textLink,
 } from "../components/PacketPage";
 import { DEADLINE_LABEL, usePhase } from "../lib/hackathon";
+import { SUBMISSION_LIMITS, validateSubmission, type SubmissionErrors as Errors } from "../../../shared/submissions.ts";
 
 const shareText = "I just submitted my project to Nut November. https://nutnovember.org/ #NutNovember";
 const shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
-
-type Errors = Partial<Record<string, string>>;
-
-// Plain-language messages for each field, checked before anything is sent.
-function validate(data: FormData): Errors {
-  const errors: Errors = {};
-  const text = (k: string) => String(data.get(k) ?? "").trim();
-  const isUrl = (v: string) => {
-    try {
-      const u = new URL(v);
-      return u.protocol === "http:" || u.protocol === "https:";
-    } catch {
-      return false;
-    }
-  };
-
-  if (!text("projectName")) errors.projectName = "Give your project a name.";
-  if (!data.get("firstContribution")) errors.firstContribution = "Pick yes or no.";
-  if (!text("description")) errors.description = "Tell us what you built.";
-  if (!text("githubRepo")) errors.githubRepo = "Add a link to the code.";
-  else if (!isUrl(text("githubRepo"))) errors.githubRepo = "That doesn't look like a link. It should start with https://";
-  if (text("demoLink") && !isUrl(text("demoLink")))
-    errors.demoLink = "That doesn't look like a link. It should start with https://";
-  if (!text("contactInfo")) errors.contactInfo = "Add a way to reach you if you win.";
-  return errors;
-}
 
 function Field({
   id,
@@ -77,7 +52,7 @@ function Field({
   );
 }
 
-const describedBy = (id: string, errors: Errors, hint = false) =>
+const describedBy = (id: keyof Errors, errors: Errors, hint = false) =>
   [hint ? `${id}-hint` : null, errors[id] ? `${id}-error` : null].filter(Boolean).join(" ") || undefined;
 
 function Closed({ children }: { children: ReactNode }) {
@@ -98,29 +73,41 @@ function Closed({ children }: { children: ReactNode }) {
 
 function Page() {
   const phase = usePhase();
-  const [state, formAction, isPending] = useActionState(publishForm, null);
+  const [success, setSuccess] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const submitting = useRef(false);
   const [errors, setErrors] = useState<Errors>({});
   const [projectName, setProjectName] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (isPending) return;
-    const data = new FormData(e.currentTarget);
-    const found = validate(data);
+    if (submitting.current) return;
+    const parsed = validateSubmission(Object.fromEntries(new FormData(e.currentTarget)));
+    const found = parsed.errors ?? {};
     setErrors(found);
-    const first = Object.keys(found)[0];
-    if (first) {
+    if (parsed.errors) {
+      const first = Object.keys(parsed.errors)[0];
       formRef.current?.querySelector<HTMLElement>(`[name="${first}"]`)?.focus();
       return;
     }
-    setProjectName(String(data.get("projectName")).trim());
-    // Dispatched by hand (not through `action`) so the answers stay in the
-    // fields if publishing fails.
-    startTransition(() => formAction(data));
+    submitting.current = true;
+    setIsPending(true);
+    setSubmissionError(null);
+    setProjectName(parsed.data.projectName);
+    try {
+      await submitProject(parsed.data);
+      setSuccess(true);
+    } catch (error) {
+      setSubmissionError(error instanceof Error ? error.message : "Please try again in a moment.");
+    } finally {
+      submitting.current = false;
+      setIsPending(false);
+    }
   }
 
-  if (state?.success) {
+  if (success) {
     return (
       <PacketPage title="Your nut is in!">
         <div role="status" className="flex flex-col items-center gap-8 text-center">
@@ -170,6 +157,7 @@ function Page() {
             <input
               id="projectName"
               name="projectName"
+              maxLength={SUBMISSION_LIMITS.projectName}
               type="text"
               autoComplete="off"
               aria-invalid={errors.projectName ? true : undefined}
@@ -213,6 +201,7 @@ function Page() {
             <textarea
               id="description"
               name="description"
+              maxLength={SUBMISSION_LIMITS.description}
               rows={6}
               aria-invalid={errors.description ? true : undefined}
               aria-describedby={describedBy("description", errors, true)}
@@ -224,6 +213,7 @@ function Page() {
             <input
               id="githubRepo"
               name="githubRepo"
+              maxLength={SUBMISSION_LIMITS.githubRepo}
               type="url"
               inputMode="url"
               placeholder="https://github.com/you/project"
@@ -246,6 +236,7 @@ function Page() {
             <input
               id="demoLink"
               name="demoLink"
+              maxLength={SUBMISSION_LIMITS.demoLink}
               type="url"
               inputMode="url"
               placeholder="https://"
@@ -264,6 +255,7 @@ function Page() {
             <input
               id="contactInfo"
               name="contactInfo"
+              maxLength={SUBMISSION_LIMITS.contactInfo}
               type="text"
               aria-invalid={errors.contactInfo ? true : undefined}
               aria-describedby={describedBy("contactInfo", errors, true)}
@@ -271,10 +263,10 @@ function Page() {
             />
           </Field>
 
-          {state?.error && (
+          {submissionError && (
             <div role="alert" className="border-2 border-pumpkin-dark bg-pumpkin-wash p-5 text-bark-dark">
               <p className="font-semibold">We couldn&apos;t send your submission.</p>
-              <p className="mt-1">Your answers are still here. Try again in a moment.</p>
+              <p className="mt-1">Your answers are still here. {submissionError}</p>
             </div>
           )}
 

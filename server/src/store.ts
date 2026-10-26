@@ -3,9 +3,9 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
-import { donations, settings, type DonationRow } from "./schema.ts";
+import { donations, settings, submissions, type DonationRow, type SubmissionRow } from "./schema.ts";
 
-export class DonationStore {
+export class AppStore {
   readonly database: Database;
   readonly db;
 
@@ -29,8 +29,8 @@ export class DonationStore {
     });
   }
 
-  get(operationId: string) { return this.db.select().from(donations).where(eq(donations.operationId, operationId)).get(); }
-  list() { return this.db.select().from(donations).all(); }
+  getDonation(operationId: string) { return this.db.select().from(donations).where(eq(donations.operationId, operationId)).get(); }
+  listDonations() { return this.db.select().from(donations).all(); }
   unconfirmed() {
     return this.db.select({ operationId: donations.operationId }).from(donations)
       .where(isNull(donations.confirmedAt)).all();
@@ -43,7 +43,9 @@ export class DonationStore {
     this.db.update(donations).set({ amountSats, confirmedAt })
       .where(and(eq(donations.operationId, operationId), isNull(donations.confirmedAt))).run();
   }
-  insert(row: DonationRow) { this.db.insert(donations).values(row).run(); }
+  insertDonation(row: DonationRow) { this.db.insert(donations).values(row).run(); }
+
+  insertSubmission(row: SubmissionRow) { this.db.insert(submissions).values(row).run(); }
 
   close() { this.database.close(); }
 }

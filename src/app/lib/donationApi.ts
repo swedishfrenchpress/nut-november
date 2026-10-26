@@ -1,9 +1,9 @@
 import { isDonationLimits, isDonationPayment, type DonationLimits, type DonationPayment, type DonationRequest } from "../../../shared/donations.ts";
 import type { EventTemplate } from "nostr-tools";
 import type { WindowNostr } from "nostr-tools/nip07";
+import { API_URL } from "./api.ts";
 
-export const DONATION_API_URL = (process.env.NEXT_PUBLIC_DONATION_API_URL
-  ?? (process.env.NODE_ENV === "development" ? "http://localhost:3001" : "https://api.nutnovember.org")).replace(/\/$/, "");
+export const DONATION_API_URL = API_URL;
 
 export class DonationApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }

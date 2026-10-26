@@ -1,6 +1,6 @@
-# Donation API
+# Nut November API
 
-Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations and the confirmed donation feed cache. Each library owns its connection and migrations; no transaction spans the two databases.
+Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API process against one persistent data directory. `coco.sqlite` contains wallet state, deterministic keys and bearer proofs. `app.sqlite` contains donor metadata, operation associations, the confirmed donation feed cache and private project submissions. Each library owns its connection and migrations; no transaction spans the two databases.
 
 ## HTTP contract
 
@@ -10,6 +10,7 @@ Bun 1.3.14, Hono 4.13.13, Coco 2.0.0, and Drizzle/SQLite. Run exactly one API pr
 | `GET /donate/limits` | Read the mint’s BOLT11/sat donation bounds through Coco. |
 | `GET /donate/:id` | Read payment status and invoice by Coco operation ID. |
 | `GET /donations` | Read the confirmed donation feed, count and sum from app SQLite. |
+| `POST /submissions` | Validate and save a private project submission, then return its ID. |
 | `GET /healthz` | HTTP health check, available after startup completes. |
 
 Example anonymous request:
@@ -18,7 +19,7 @@ Example anonymous request:
 {"amountSats":2100,"message":"Go nuts!"}
 ```
 
-Every submission requests a new invoice, including identical submissions after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are positive whole sats within the mint’s advertised BOLT11/sat minting bounds; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
+Every donation request creates a new invoice, including identical requests after an error or a lost response. There is no request ID, deduplication, resumable creation, or automatic creation retry. Inputs are positive whole sats within the mint’s advertised BOLT11/sat minting bounds; messages are accepted up to 280 JavaScript characters and included only above 1,000 sats. Public previews are limited to 256 Unicode code points.
 
 `GET /donate/limits` returns `{ minSats, maxSats }`. The backend reads these bounds through Coco’s payment-method capability API on startup, limit reads and invoice validation, leaving mint-info caching and refresh to Coco. An absent or zero minimum becomes one sat; an absent maximum is returned as null. Amounts must be JavaScript safe integers. The frontend loads these bounds before enabling invoice requests and disables presets outside the range. Unsupported minting or an unusable range prevents startup.
 
@@ -57,6 +58,31 @@ Migration `0002_operation_id_primary_key.sql` retains each operation ID, message
 `MAX_PENDING_DONATIONS` defaults to 1,000 pending BOLT11 quotes at Minibits, counted from Coco. This includes abandoned quotes that have no donation row. Unpaid expired quotes remain pending because expiry does not prove non-payment. Monitor this count: enough abandoned invoices intentionally stop new invoice admission. Do not delete wallet records to free capacity; investigate and adjust the bound deliberately.
 
 This draft has not been deployed. Development instances using the previous five-column schema upgrade automatically. Drafts predating that schema need a fresh development data directory and seed; retain an earlier wallet if it contains funds.
+
+## Project submissions
+
+`POST /submissions` accepts the existing form fields without a Nostr account or signature:
+
+```json
+{"projectName":"My nut","firstContribution":"yes","description":"What we built","githubRepo":"https://github.com/example/project","demoLink":"","contactInfo":"builder@example.com"}
+```
+
+The API returns `201 {"id":"..."}` only after the database insert succeeds. The table stores these six fields, a server-generated ID and a creation timestamp in Unix milliseconds. Inputs are trimmed; `firstContribution` must be `yes` or `no`. Project names are limited to 120 characters, descriptions to 5,000, each URL to 2,048, and contact information to 500. Code and demo links must use HTTP(S) without embedded credentials; the demo link may be empty or omitted. Unknown fields, malformed JSON and invalid types are rejected. Frontend and backend share validation and the Nov 1–27, 2026 UTC submission window. Request bodies are limited to 64 KiB for submissions; donations retain their 4 KiB limit.
+
+Submissions have their own Hono rate-limiter instances: 3 attempts per IP per 10 minutes and 50 globally per minute, with `Retry-After` on HTTP 429. Their memory stores are independent of donations. Windows start with the first request and counters reset on API restart. A global rejection consumes an IP slot. Each accepted request creates a new entry, including deliberate resubmission after a lost response. The browser keeps the form's answers after failures and does not retry automatically.
+
+Entries and contact details are private to organizers with server access. There is no public listing, read, update or delete endpoint, and submission contents are not logged or sent to Nostr. No legacy Nostr submissions are imported. Nostr signing for verified donors is unchanged.
+
+From the `server` directory on the API machine, or against a consistent private copy of its app database:
+
+```sh
+umask 077
+DATA_DIR=/data bun run --silent submissions:export > /secure/submissions.json
+```
+
+Set `DATA_DIR` to the actual data directory and use an existing private output directory. The command opens `app.sqlite` read-only, emits a JSON array ordered by creation time and ID, and requires neither the wallet seed nor a running mint. It does not run migrations. This export contains contact information; keep the file private.
+
+The additive `0004_submissions.sql` migration runs at API startup and preserves the existing donation tables. It also preserves entries from the earlier submissions draft; the preceding donation migrations retain operation IDs and add the confirmed feed cache. Deploy the updated API before the frontend switch. Existing app database backups now also cover submissions. Rolling back the frontend returns new entries to the old Nostr flow; retain and export entries already saved in SQLite.
 
 ## Configuration
 
