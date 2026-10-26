@@ -95,7 +95,7 @@ test("an exact-match withdrawal saves a private file without printing bearer mat
   const h = await harness(21);
   const output = join(h.directory, "prize.cashu");
   const swaps = h.mint.swaps;
-  const result = await h.command(["withdraw", "21", "--output", output]);
+  const result = await h.command(["withdraw", `--output=${output}`, "21"]);
   expect(result.out).toEqual([]);
   expect(h.mint.swaps).toBe(swaps);
   const token = readFileSync(output, "utf8").trim();
@@ -116,7 +116,7 @@ test("lost token output resumes the same persisted token across CLI sessions", a
   const id = balance.withdrawals[0].id;
   const swaps = h.mint.swaps;
   const first = await h.command(["withdraw", "--operation", id]);
-  const second = await h.command(["withdraw", "--operation", id]);
+  const second = await h.command(["withdraw", `--operation=${id}`]);
   expect(first.out).toEqual([lostToken]);
   expect(first.out).toEqual(second.out);
   expect(h.mint.swaps).toBe(swaps);
@@ -152,7 +152,7 @@ test("insufficient funds, bad amounts, unknown operations and existing output fi
   }
   await expect(h.command(["withdraw", "65"])).rejects.toThrow("Insufficient spendable balance");
   await expect(h.command(["withdraw", "--operation", "missing"])).rejects.toThrow("No matching");
-  await expect(h.command(["withdraw", "21", "--operation", "missing"])).rejects.toThrow("Usage");
+  await expect(h.command(["withdraw", "21", "--operation", "missing"])).rejects.toThrow("Provide either an amount");
   const path = join(h.directory, "existing.cashu");
   writeFileSync(path, "keep");
   await expect(h.command(["withdraw", "21", "--output", path])).rejects.toThrow("Cannot create output file");
@@ -191,12 +191,46 @@ test("API and CLI honor the same process lock; killing the owner releases it", a
   release();
 });
 
-test("empty wallets have zero balance and help needs no wallet environment", async () => {
+test("empty wallets report zero local balance", async () => {
   const h = await harness(0);
   expect(await h.balance()).toMatchObject({ spendableSats: 0, reservedSats: 0, totalSats: 0, withdrawals: [] });
-  const out: string[] = [];
-  await runWalletCli(["--help"], {}, { out: (value) => { out.push(value); }, err: () => {} });
-  expect(out[0]).toContain("wallet:withdraw");
+});
+
+test("generated help works for each command without opening a wallet or requiring a seed", async () => {
+  for (const args of [[], ["--help"], ["balance", "-h"], ["withdraw", "--help"], ["help", "withdraw"]]) {
+    const out: string[] = [], err: string[] = [];
+    await runWalletCli(args, {}, { out: (value) => { out.push(value); }, err: (value) => { err.push(value); } });
+    const help = out.join("\n");
+    expect(help).toContain("Usage: wallet");
+    expect(help).toContain("Stop the API first");
+    expect(err).toEqual([]);
+    if (args.includes("withdraw")) {
+      expect(help).toContain("--operation <id>");
+      expect(help).toContain("--output <file>");
+      expect(help).toContain("[sats]");
+    }
+  }
+});
+
+test("usage errors reject invalid withdrawal targets and options before accessing a wallet", async () => {
+  const cases: [string[], string][] = [
+    [["withdrawl"], "unknown command"],
+    [["withdraw"], "Provide either an amount"],
+    [["withdraw", "21", "--operation", "id"], "Provide either an amount"],
+    [["withdraw", "21", "--unknown"], "unknown option"],
+    [["balance", "--output", "file"], "unknown option"],
+    [["withdraw", "21", "--output"], "argument missing"],
+    [["withdraw", "--operation"], "argument missing"],
+    [["withdraw", "21", "--output="], "Value must not be empty"],
+    [["withdraw", "--operation="], "Value must not be empty"],
+    [["withdraw", "21", "42"], "too many arguments"],
+    [["balance", "21"], "too many arguments"],
+  ];
+  for (const [args, message] of cases) {
+    const out: string[] = [];
+    await expect(runWalletCli(args, {}, { out: (value) => { out.push(value); }, err: () => {} })).rejects.toThrow(message);
+    expect(out).toEqual([]);
+  }
 });
 
 test("root CLI scripts pass arguments, emit JSON balance and return a failing exit code on invalid withdrawals", async () => {
@@ -209,6 +243,6 @@ test("root CLI scripts pass arguments, emit JSON balance and return a failing ex
   const invalid = Bun.spawn([process.execPath, "run", "wallet:withdraw", "--", "0"], { cwd, env, stdout: "pipe", stderr: "pipe" });
   expect(await invalid.exited).toBe(1);
   expect(await new Response(invalid.stdout).text()).toBe("");
-  expect(await new Response(invalid.stderr).text()).toContain("Amount must be positive");
+  expect((await new Response(invalid.stderr).text()).match(/Amount must be positive/g)).toHaveLength(1);
   expect((await h.balance()).spendableSats).toBe(64);
 });

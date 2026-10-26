@@ -168,6 +168,8 @@ bun run wallet:balance
 bun run wallet:withdraw 2100 --output /secure/prize.cashu
 ```
 
+Add `--help` to either command for generated usage and option descriptions.
+
 `wallet:balance` prints JSON containing the mint, unit, `spendableSats`, `reservedSats`, `totalSats`, and a `withdrawals` list with operation IDs, states, amounts and fees. This reads local Coco state without mint requests or startup recovery. `totalSats` is spendable plus reserved ready proofs; outgoing tokens are no longer part of that balance. Pending withdrawals are listed separately and may already have been claimed since the last mint check. This wallet balance differs from the historical donation total, which payouts do not reduce.
 
 `wallet:withdraw <sats>` accepts positive whole safe-integer sats and uses Coco's persisted send operations to produce a spendable Cashu token from the configured Minibits mint. Coco handles proof selection, swaps, change and fees; the requested amount is the token amount, with any input fees charged additionally. Without `--output`, the token alone goes to stdout. With `--output`, the CLI creates a new file with permissions `0600`, writes and flushes the token, and prints no token to the terminal. It refuses to overwrite an existing file. The token is bearer money; keep it out of logs and support tickets. Operation IDs, amount, fee and progress go to stderr.

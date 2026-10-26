@@ -15,6 +15,7 @@
   "dependencies": {
     "@cashu/coco-core": "2.0.0",
     "@cashu/coco-sqlite-bun": "2.0.0",
+    "commander": "15.0.0",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.13",
     "hono-rate-limiter": "0.5.4",
