@@ -8,7 +8,9 @@ import {
   ReactNode,
 } from "react";
 import dynamic from "next/dynamic";
+import { nostrPool, PROFILE_RELAYS } from "@/nostr-pool";
 import { createDonationStore, type DonationSnapshot } from "../lib/donations";
+import { createDonorProfileStore } from "../lib/donorProfiles";
 import { DONATION_API_URL } from "../lib/donationApi";
 
 export type { PrizeKey } from "../lib/donations";
@@ -60,6 +62,18 @@ const donationStore = createDonationStore({
   },
 });
 
+const donorProfileStore = createDonorProfileStore({
+  donations: donationStore,
+  getStorage: () => window.localStorage,
+  connect(authors, handlers) {
+    const sub = nostrPool.subscribeManyEose(PROFILE_RELAYS, { kinds: [0], authors }, {
+      ...handlers,
+      maxWait: 10_000,
+    });
+    return () => { void sub.close(); };
+  },
+});
+
 const DonationsContext = createContext<typeof donationStore | undefined>(
   undefined
 );
@@ -68,7 +82,12 @@ export function DonationsProvider({ children }: { children: ReactNode }) {
   // Own the sync for the lifetime of the app, including client-side navigation.
   // Additional readers share this connection through the store's subscriptions.
   useEffect(() => donationStore.subscribe(() => {}), []);
+  useEffect(() => donorProfileStore.subscribe(() => {}), []);
   return <DonationsContext.Provider value={donationStore}>{children}</DonationsContext.Provider>;
+}
+
+export function useDonorProfiles() {
+  return useSyncExternalStore(donorProfileStore.subscribe, donorProfileStore.getSnapshot, donorProfileStore.getServerSnapshot);
 }
 
 function useDonations(): DonationSnapshot {
