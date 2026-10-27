@@ -1,6 +1,6 @@
 # Nut November
 
-Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Lightning invoices and Cashu payment requests are supported, with anonymous donations or Nostr-verified donor identity. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment. The project form saves directly to the API without publishing to Nostr.
+Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Lightning invoices and Cashu payment requests are supported, with anonymous donations or Nostr-verified donor identity. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment. The frontend directs project submissions to CryptPad through the branded `/form` page.
 
 ## Development
 
@@ -39,9 +39,9 @@ npm run lint
 npm run build
 ```
 
-The frontend uses `NEXT_PUBLIC_API_URL` at build time for donations and submissions (`NEXT_PUBLIC_DONATION_API_URL` remains a fallback for existing environments). Development defaults to `http://localhost:3001`; production defaults to `https://api.nutnovember.org`. Configure the API's `PUBLIC_API_URL` and exact `CORS_ORIGINS` accordingly. Signed donation requests bind to that public URL.
+The frontend uses `NEXT_PUBLIC_API_URL` at build time for donations (`NEXT_PUBLIC_DONATION_API_URL` remains a fallback for existing environments). Development defaults to `http://localhost:3001`; production defaults to `https://api.nutnovember.org`. Configure the API's `PUBLIC_API_URL` and exact `CORS_ORIGINS` accordingly. Signed donation requests bind to that public URL.
 
-Submissions are open ahead of the hackathon and close Nov 28, 2026 at 00:00 UTC, enforced by both the form and the API using the shared deadline. The hackathon itself runs Nov 1–27. Organizers can export entries through a private server shell; see [submission storage and export](server/README.md#project-submissions).
+Submissions are open ahead of the hackathon. The `/form` page links to the CryptPad submission form until Nov 28, 2026 at 00:00 UTC, then shows the submissions-closed state. The hackathon itself runs Nov 1–27. Organizers must configure the matching closing time in CryptPad; the website cannot enforce it there. The existing submission API and stored entries remain unchanged, but the frontend no longer sends submissions to it. Organizers can export existing API entries through a private server shell; see [submission storage and export](server/README.md#project-submissions).
 
 See [API, deployment and recovery](server/README.md). The existing frontend deploys on pushes to `main`; provision the API before merging the frontend cutover. API deployment is a separate manual workflow.
 
