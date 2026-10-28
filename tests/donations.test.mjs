@@ -48,8 +48,8 @@ test('empty backend contributes zero; frontend adds sponsorship exactly once', (
   const value = h.store.getSnapshot();
   assert.equal(value.donationTotal, 0);
   assert.equal(value.donationCount, 0);
-  assert.equal(value.total, 400000);
-  assert.deepEqual(value.prizes, { golden: 150000, hardest: 100000, nuttiest: 50000, design: 50000, fresh: 50000 });
+  assert.equal(value.total, 700000);
+  assert.deepEqual(value.prizes, { golden: 150000, hardest: 100000, nuttiest: 50000, design: 50000, fresh: 50000, value4value: 300000 });
   stop();
 });
 
@@ -57,17 +57,18 @@ test('hydrates cached API snapshots before connecting, then replaces them with a
   const h = harness({ cached: feed(item()) });
   assert.equal(h.store.getServerSnapshot().donations.length, 0);
   const initial = h.store.getSnapshot();
-  assert.equal(initial.total, 401001);
+  assert.equal(initial.total, 701001);
+  assert.equal(initial.prizes.value4value, 300000);
   assert.equal(initial.isStale, true);
   assert.equal(h.connections, 0);
   assert.equal(h.store.getSnapshot(), initial);
   const stop = h.store.subscribe(() => {});
   h.handlers.snapshot(feed(item(21, 'new')));
   assert.deepEqual(h.store.getSnapshot().donations.map(d => d.id), ['new']);
-  assert.equal(h.store.getSnapshot().total, 400021);
+  assert.equal(h.store.getSnapshot().total, 700021);
   assert.equal(h.store.getSnapshot().isStale, false);
   h.handlers.snapshot(feed());
-  assert.equal(h.store.getSnapshot().total, 400000);
+  assert.equal(h.store.getSnapshot().total, 700000);
   stop();
 });
 
@@ -81,8 +82,9 @@ test('all consumers share one connection and repeated snapshots never double cou
   h.handlers.snapshot(feed(item(), item(21000, 'two')));
   h.handlers.snapshot(feed(item(), item(21000, 'two')));
   assert.equal(hero, history);
-  assert.equal(hero.total, 422001);
+  assert.equal(hero.total, 722001);
   assert.equal(hero.prizes.golden, 154400);
+  assert.equal(hero.prizes.value4value, 300000);
   assert.deepEqual(hero.donations.map(d => d.amount), [21000, 1001]);
   stopHero(); stopHistory();
   assert.equal(h.closes, 0);

@@ -23,8 +23,8 @@ export default function SuccessMessage({ amount, onReset }: SuccessMessageProps)
         </p>
         <DonationData>{({ total }) => (
           <p className="text-lg text-bark/85">
-            It&apos;s now <strong className="font-semibold tabular-nums">{formatSats(total)}</strong>, split
-            across all five prizes. 🥜
+            The total pool is now <strong className="font-semibold tabular-nums">{formatSats(total)}</strong>.
+            Your donation grows the five community prizes. 🥜
           </p>
         )}</DonationData>
       </div>

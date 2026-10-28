@@ -1,12 +1,14 @@
 import type { DonationFeed, PublicDonation } from "../../../shared/donations.ts";
+import { NODESIGNAL_TRACK } from "./sponsors.ts";
 
 export type Donation = PublicDonation;
-const PRIZE_KEYS = ["golden", "hardest", "nuttiest", "design", "fresh"] as const;
-export type PrizeKey = (typeof PRIZE_KEYS)[number];
+const COMMUNITY_PRIZE_KEYS = ["golden", "hardest", "nuttiest", "design", "fresh"] as const;
+export type PrizeKey = (typeof COMMUNITY_PRIZE_KEYS)[number] | "value4value";
 
 // Sponsorship is a frontend commitment, never a payment in the API's ledger.
 const SPONSOR_PRIZES: Record<PrizeKey, number> = {
   golden: 150_000, hardest: 100_000, nuttiest: 50_000, design: 50_000, fresh: 50_000,
+  value4value: NODESIGNAL_TRACK.sats,
 };
 const SPONSOR_TOTAL = Object.values(SPONSOR_PRIZES).reduce((sum, amount) => sum + amount, 0);
 export interface DonationSnapshot extends DonationFeed {
@@ -37,9 +39,12 @@ export function parseDonationFeed(value: unknown): DonationFeed | null {
 }
 
 function summarize(feed: DonationFeed, isLoading: boolean, isStale: boolean, error: string | null): DonationSnapshot {
-  const share = Math.floor(feed.donationTotal / PRIZE_KEYS.length);
+  const share = Math.floor(feed.donationTotal / COMMUNITY_PRIZE_KEYS.length);
+  const prizes = { ...SPONSOR_PRIZES };
+  // Community donations grow the original five prizes; NodeSignal funds a fixed track.
+  for (const key of COMMUNITY_PRIZE_KEYS) prizes[key] += share;
   return { ...feed, total: SPONSOR_TOTAL + feed.donationTotal,
-    prizes: Object.fromEntries(PRIZE_KEYS.map((key) => [key, SPONSOR_PRIZES[key] + share])) as Record<PrizeKey, number>,
+    prizes,
     isLoading, isStale, error };
 }
 
