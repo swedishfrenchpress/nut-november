@@ -105,7 +105,28 @@ export default function Value4ValuePage() {
 
         <section aria-labelledby="ideas">
           <h2 id="ideas" className={heading}>A few seeds to plant</h2>
-          <p className="mt-3">Starting points for your build, not a feature checklist.</p>
+          <p className="mt-3">
+            Bring your own Value4Value idea, or pick a starting point below.
+          </p>
+          <article className="mt-6 border-2 border-bark bg-cream p-6 sm:p-8">
+            <p className="text-sm font-bold uppercase tracking-widest text-pumpkin-dark">
+              NodeSignal&apos;s suggested project
+            </p>
+            <h3 className="mt-3 text-2xl font-bold leading-tight text-bark">Add Cashu to Hopp</h3>
+            <p className="mt-4">
+              NodeSignal suggests adding Cashu support to Hopp, their open-source podcast player built for
+              Podcasting 2.0 and Value4Value.
+            </p>
+            <p className="mt-4">
+              Hopp already supports Lightning boosts and streaming sats through
+              Nostr Wallet Connect. Explore how Cashu could fit into that listening
+              experience and help listeners give value back to podcasters.
+            </p>
+            <a href="https://gitlab.com/nodesignal/hopp" className={`${link} mt-5 inline-block`}>
+              Explore Hopp on GitLab <span aria-hidden="true">↗</span>
+            </a>
+          </article>
+          <p className="mt-8">More directions to explore across the Value4Value track:</p>
           <ul className="mt-6 grid gap-6 sm:grid-cols-2">
             {ideas.map((idea) => (
               <li key={idea.title} className="border-t-2 border-bark/30 pt-4">

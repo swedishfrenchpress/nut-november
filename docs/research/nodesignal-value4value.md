@@ -6,6 +6,14 @@ Researched 2026-10-28 from primary sources. No applicable `AGENTS.md` or existin
 
 The task brief supplies **a 300,000-sat NodeSignal-sponsored Value4Value track for the Nut November Cashu hackathon**. Treat the amount and sponsorship as organizer-provided information, not as independently verified public announcements. The sources below establish the podcast and Value4Value context; they do not establish judging criteria, prize allocation, winner count, eligibility, submission requirements, or sponsor approval of particular project ideas. Do not invent those details.
 
+The organizer subsequently confirmed **a Cashu integration in Hopp as NodeSignal's suggested starting project**. The track remains broadly Value4Value; Hopp is an optional direction for participants looking for a concrete project, not an eligibility requirement or a confirmed judging preference.
+
+## Hopp starting project
+
+- The [official Hopp README](https://gitlab.com/nodesignal/hopp/-/blob/main/README.md) describes an open-source podcast player built for Podcasting 2.0 and Value4Value. It documents Lightning wallet connections through Nostr Wallet Connect, boosts, and streaming sats. The README was read through GitLab's public repository API on 2026-10-28 after the web fetch failed.
+- The requested Cashu integration comes from the organizer's sponsor brief. The page invites participants to explore that integration without prescribing a wallet architecture, required feature list, or compatibility guarantees.
+- The featured project links directly to the [Hopp repository](https://gitlab.com/nodesignal/hopp). The other seeds remain broader project inspiration.
+
 ## Suggested English website copy
 
 **Title:** Value4Value
