@@ -4,8 +4,8 @@ import Link from "next/link";
 import PacketPage, { primaryButton, secondaryButton } from "../../components/PacketPage";
 import { NODESIGNAL_TRACK } from "../../lib/sponsors";
 
-const title = "Value4Value · NodeSignal sponsor track · Nut November";
-const description = "Build with Cashu for podcasts and content creators. Explore the Value4Value track, sponsored by NodeSignal with a fixed 300,000-sat prize pool.";
+const title = "Value4Value · Nodesignal sponsor track · Nut November";
+const description = "Build with Cashu for podcasts and content creators. Explore the Value4Value track, sponsored by Nodesignal with a fixed 400,000-sat prize pool.";
 
 export const metadata: Metadata = {
   title,
@@ -51,16 +51,16 @@ export default function Value4ValuePage() {
   return (
     <PacketPage
       title="Value4Value"
-      intro="A special sponsor track for Cashu builders, backed by NodeSignal."
+      intro="A special sponsor track for Cashu builders, backed by Nodesignal."
     >
       <div className="space-y-12 text-lg leading-relaxed text-bark-dark">
         <section aria-label="Track sponsor and prize pool" className="bg-bark p-6 text-cream sm:p-8">
           <div className="flex flex-wrap items-center gap-5">
-            <Image src={NODESIGNAL_TRACK.logo} alt="NodeSignal podcast logo" width={112} height={112} />
+            <Image src={NODESIGNAL_TRACK.logo} alt="Nodesignal podcast logo" width={112} height={112} />
             <div>
               <p className="text-sm font-bold uppercase tracking-widest text-cream-deep">Sponsored by</p>
               <a href={NODESIGNAL_TRACK.website} target="_blank" rel="noopener noreferrer" className="text-3xl font-bold underline decoration-cream/40 underline-offset-4 hover:decoration-cream focus-visible:outline-cream">
-                NodeSignal <span aria-hidden="true">↗</span>
+                Nodesignal <span aria-hidden="true">↗</span>
               </a>
             </div>
           </div>
@@ -110,11 +110,11 @@ export default function Value4ValuePage() {
           </p>
           <article className="mt-6 border-2 border-bark bg-cream p-6 sm:p-8">
             <p className="text-sm font-bold uppercase tracking-widest text-pumpkin-dark">
-              NodeSignal&apos;s suggested project
+              Nodesignal&apos;s suggested project
             </p>
             <h3 className="mt-3 text-2xl font-bold leading-tight text-bark">Add Cashu to Hopp</h3>
             <p className="mt-4">
-              NodeSignal suggests adding Cashu support to Hopp, their open-source podcast player built for
+              Nodesignal suggests adding Cashu support to Hopp, their open-source podcast player built for
               Podcasting 2.0 and Value4Value.
             </p>
             <p className="mt-4">
@@ -138,9 +138,9 @@ export default function Value4ValuePage() {
         </section>
 
         <section aria-labelledby="nodesignal">
-          <h2 id="nodesignal" className={heading}>Meet NodeSignal</h2>
+          <h2 id="nodesignal" className={heading}>Meet Nodesignal</h2>
           <p className="mt-4">
-            NodeSignal is a German-language Bitcoin podcast with discussions,
+            Nodesignal is a German-language Bitcoin podcast with discussions,
             interviews and book reviews. It is supported by its listeners through
             Value4Value and already offers ways to contribute with Lightning and Cashu.
           </p>
@@ -149,9 +149,9 @@ export default function Value4ValuePage() {
             conversation with Gigi about Value4Value and independent creators.
           </p>
           <ul className="mt-5 space-y-3 text-base">
-            <li><a href={NODESIGNAL_TRACK.website} className={link}>Visit NodeSignal ↗</a></li>
+            <li><a href={NODESIGNAL_TRACK.website} className={link}>Visit Nodesignal ↗</a></li>
             <li><a href="https://nodesignal.space/E102/" className={link}>Value4Value with Gigi (German) ↗</a></li>
-            <li><a href="https://nodesignal.space/projekte/" className={link}>Explore NodeSignal&apos;s projects ↗</a></li>
+            <li><a href="https://nodesignal.space/projekte/" className={link}>Explore Nodesignal&apos;s projects ↗</a></li>
             <li><a href="https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/tags/value.md" className={link}>Podcasting 2.0: payment information in RSS ↗</a></li>
           </ul>
         </section>

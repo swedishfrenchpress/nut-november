@@ -21,8 +21,8 @@ export default function Sponsors() {
             Grow the prize pool
           </h2>
           <p className="mt-6 max-w-[46ch] text-lg leading-relaxed text-cream">
-            OpenCash seeded the five community prizes with 400,000 sats. NodeSignal
-            added a fixed 300,000 sats for the Value4Value track. Your donations are
+            OpenCash seeded the five community prizes with 400,000 sats. Nodesignal
+            added a fixed 400,000 sats for the Value4Value track. Your donations are
             split evenly across the five community prizes.
           </p>
 
@@ -45,8 +45,8 @@ export default function Sponsors() {
                     ? "Counting donations…"
                     : error ? "Showing the last known pool. Donation updates are temporarily unavailable."
                     : donationCount === 0
-                      ? "From OpenCash and NodeSignal. No donations yet, be the first."
-                      : `From OpenCash, NodeSignal and ${donationCount} ${donationCount === 1 ? "donation" : "donations"} so far.`}
+                      ? "From OpenCash and Nodesignal. No donations yet, be the first."
+                      : `From OpenCash, Nodesignal and ${donationCount} ${donationCount === 1 ? "donation" : "donations"} so far.`}
                 </p>
               </>
             )}
@@ -94,7 +94,7 @@ export default function Sponsors() {
           >
             <Image src={NODESIGNAL_TRACK.logo} alt="" width={80} height={80} />
             <span>
-              <span className="block text-2xl font-bold">NodeSignal</span>
+              <span className="block text-2xl font-bold">Nodesignal</span>
               <span className="text-sm">Value4Value track sponsor</span>
             </span>
           </a>

@@ -199,7 +199,7 @@ body {
   mix-blend-mode: soft-light;
 }
 
-/* V4V: copper foil with broadcast rings for the NodeSignal sponsor packet. */
+/* V4V: copper foil with broadcast rings for the Nodesignal sponsor packet. */
 .prize-holo[data-finish="copper"] .prize-holo-bands {
   background: repeating-linear-gradient(
     115deg,

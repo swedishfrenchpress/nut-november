@@ -41,7 +41,7 @@ export function parseDonationFeed(value: unknown): DonationFeed | null {
 function summarize(feed: DonationFeed, isLoading: boolean, isStale: boolean, error: string | null): DonationSnapshot {
   const share = Math.floor(feed.donationTotal / COMMUNITY_PRIZE_KEYS.length);
   const prizes = { ...SPONSOR_PRIZES };
-  // Community donations grow the original five prizes; NodeSignal funds a fixed track.
+  // Community donations grow the original five prizes; Nodesignal funds a fixed track.
   for (const key of COMMUNITY_PRIZE_KEYS) prizes[key] += share;
   return { ...feed, total: SPONSOR_TOTAL + feed.donationTotal,
     prizes,

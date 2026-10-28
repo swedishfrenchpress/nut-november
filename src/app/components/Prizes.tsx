@@ -26,7 +26,7 @@ export default function Prizes() {
           </h2>
           <p className="mt-5 max-w-[52ch] text-lg sm:text-xl text-bark-dark/90">
             Five community prizes and a special Value4Value track, paid in sats.
-            OpenCash put up 400,000 and NodeSignal added 300,000 for their track.
+            OpenCash put up 400,000 and Nodesignal added 400,000 for their track.
             Every donation grows the pool.
             <DonationData fallback={
               <> It&apos;s at <strong className="font-semibold tabular-nums"><LoadingText>000,000 sats</LoadingText></strong> so far.</>
