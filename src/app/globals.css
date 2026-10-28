@@ -199,6 +199,29 @@ body {
   mix-blend-mode: soft-light;
 }
 
+/* V4V: copper foil with broadcast rings for the Nodesignal sponsor packet. */
+.prize-holo[data-finish="copper"] .prize-holo-bands {
+  background: repeating-linear-gradient(
+    115deg,
+    #803b20 0%,
+    #c87942 6%,
+    #f2be83 11%,
+    #ffe4bb 14%,
+    #d68a50 20%,
+    #803b20 28%
+  );
+  animation: prize-holo-sway 12s ease-in-out infinite alternate;
+}
+.prize-holo[data-finish="copper"] .prize-holo-foil {
+  background: repeating-radial-gradient(
+    circle at 50% 25%,
+    transparent 0 2.4cqw,
+    rgba(255, 248, 230, 0.55) 2.5cqw 2.9cqw,
+    transparent 3cqw 5cqw
+  );
+  mix-blend-mode: soft-light;
+}
+
 /* HARDEST: brushed chrome */
 .prize-holo[data-finish="chrome"] .prize-holo-bands {
   background: repeating-linear-gradient(

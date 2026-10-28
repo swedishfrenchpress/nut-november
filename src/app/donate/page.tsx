@@ -136,7 +136,7 @@ function Page() {
   return (
     <PacketPage
       title="Grow the prize pool"
-      intro="Every sat you send is split evenly across the five prizes."
+      intro="Every sat you send is split evenly across the five community prizes. Nodesignal funds the separate Value4Value track."
     >
       <DonationData>{({ total }) => <PoolAmount sats={total}>sats in the pool now</PoolAmount>}</DonationData>
 

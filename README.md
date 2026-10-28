@@ -1,6 +1,6 @@
 # Nut November
 
-Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Lightning invoices and Cashu payment requests are supported, with anonymous donations or Nostr-verified donor identity. Only successfully collected donations enter the public feed. The frontend adds the 400,000-sat sponsor commitment. The frontend directs project submissions to CryptPad through the branded `/form` page.
+Next.js frontend and a separate Bun/Hono API for donations and project submissions. Coco owns the Cashu wallet at the Minibits mint; Drizzle owns donation metadata and private submissions in a second SQLite database. Lightning invoices and Cashu payment requests are supported, with anonymous donations or Nostr-verified donor identity. Only successfully collected donations enter the public feed. The frontend adds 800,000 sats in sponsor commitments: 400,000 from OpenCash for the five community prizes, plus a fixed 400,000 from Nodesignal for the Value4Value track. Community donations continue to grow only the five community prizes. The sponsored track details live at `/tracks/value4value`. The frontend directs project submissions to CryptPad through the branded `/form` page.
 
 ## Development
 

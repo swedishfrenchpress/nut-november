@@ -5,6 +5,7 @@ import Link from "next/link";
 import { DonationData } from "../context/DonationsContext";
 import { formatSats } from "../lib/hackathon";
 import LoadingText from "./LoadingText";
+import { NODESIGNAL_TRACK } from "../lib/sponsors";
 
 const totalClassName = "mt-10 text-5xl leading-none font-extrabold font-stretch-expanded tracking-[-0.01em] tabular-nums sm:text-6xl";
 
@@ -20,13 +21,15 @@ export default function Sponsors() {
             Grow the prize pool
           </h2>
           <p className="mt-6 max-w-[46ch] text-lg leading-relaxed text-cream">
-            OpenCash seeded the pool with 400,000 sats. Send sats over Lightning and they&apos;re split evenly across all five prizes on top.
+            OpenCash seeded the five community prizes with 400,000 sats. Nodesignal
+            added a fixed 400,000 sats for the Value4Value track. Your donations are
+            split evenly across the five community prizes.
           </p>
 
           <DonationData fallback={
             <>
               <p className={totalClassName}><LoadingText>000,000 sats</LoadingText></p>
-              <p className="mt-3 text-lg text-cream"><LoadingText>From OpenCash and 0 donations so far.</LoadingText></p>
+              <p className="mt-3 text-lg text-cream"><LoadingText>From our sponsors and 0 donations so far.</LoadingText></p>
             </>
           }>
             {({ total, donationCount, isLoading, error }) => (
@@ -42,8 +45,8 @@ export default function Sponsors() {
                     ? "Counting donations…"
                     : error ? "Showing the last known pool. Donation updates are temporarily unavailable."
                     : donationCount === 0
-                      ? "From OpenCash. No donations yet, be the first."
-                      : `From OpenCash and ${donationCount} ${donationCount === 1 ? "donation" : "donations"} so far.`}
+                      ? "From OpenCash and Nodesignal. No donations yet, be the first."
+                      : `From OpenCash, Nodesignal and ${donationCount} ${donationCount === 1 ? "donation" : "donations"} so far.`}
                 </p>
               </>
             )}
@@ -82,6 +85,18 @@ export default function Sponsors() {
               height={100}
               className="h-auto max-w-full"
             />
+          </a>
+          <a
+            href={NODESIGNAL_TRACK.website}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-4 flex items-center gap-4 bg-cream p-5 text-bark transition-colors duration-150 hover:bg-white"
+          >
+            <Image src={NODESIGNAL_TRACK.logo} alt="" width={80} height={80} />
+            <span>
+              <span className="block text-2xl font-bold">Nodesignal</span>
+              <span className="text-sm">Value4Value track sponsor</span>
+            </span>
           </a>
         </div>
       </div>
