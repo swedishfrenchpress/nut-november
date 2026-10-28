@@ -403,12 +403,17 @@ export default function PrizeCard({
             <div className="absolute left-[7%] right-[7%] bottom-[5%] flex items-end justify-between gap-[3cqw] border-t-[0.6cqw] border-bark pt-[3cqw]">
               <div>
                 <Field label="Sponsored track" value={prize.sponsor.name} />
-                <Link href={prize.sponsor.href} className="pointer-events-auto mt-[1cqw] block text-[4.2cqw] font-bold underline underline-offset-4 hover:text-pumpkin-dark">
+                <span className="mt-[1cqw] block text-[4.2cqw] font-bold underline underline-offset-4">
                   Explore the track <span aria-hidden="true">→</span>
-                </Link>
+                </span>
               </div>
               <Image src={prize.sponsor.logo} alt="" width={72} height={72} className="h-auto w-[17cqw] shrink-0 border-[0.6cqw] border-bark" />
             </div>
+            <Link
+              href={prize.sponsor.href}
+              aria-label={`Explore the ${prize.title} track sponsored by ${prize.sponsor.name}`}
+              className="pointer-events-auto absolute inset-x-[1.2%] top-[48%] bottom-[1%] rounded-b-[4cqw] transition-colors hover:bg-bark/5 focus-visible:outline-offset-[-4px]"
+            />
           </div>
         )}
 

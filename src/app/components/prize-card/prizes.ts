@@ -1,4 +1,5 @@
 import type { PrizeKey } from "../../context/DonationsContext";
+import { NODESIGNAL_TRACK } from "../../lib/sponsors";
 
 export interface PrizeCardData {
   key: PrizeKey;
@@ -59,5 +60,19 @@ export const prizeCards: PrizeCardData[] = [
     track: "Newcomer",
     finish: "aurora",
     reveal: "🌱",
+  },
+  {
+    key: "value4value",
+    word: "V4V",
+    title: NODESIGNAL_TRACK.name,
+    blurb: "Cashu tools for podcasts and creators. Give value back.",
+    track: "Value4Value",
+    finish: "copper",
+    reveal: "📡",
+    sponsor: {
+      name: NODESIGNAL_TRACK.sponsor,
+      logo: NODESIGNAL_TRACK.logo,
+      href: NODESIGNAL_TRACK.href,
+    },
   },
 ];

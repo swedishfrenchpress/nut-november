@@ -6,7 +6,6 @@ import { secondaryButton } from "./PacketPage";
 import PrizeCard from "./prize-card/PrizeCard";
 import { prizeCards } from "./prize-card/prizes";
 import LoadingText from "./LoadingText";
-import SponsoredTrackCard from "./prize-card/SponsoredTrackCard";
 
 export default function Prizes() {
   const phase = usePhase();
@@ -45,9 +44,6 @@ export default function Prizes() {
               </DonationData>
             </li>
           ))}
-          <li className="w-full max-w-[340px]">
-            <SponsoredTrackCard />
-          </li>
         </ul>
 
         <div className="mt-16 text-center">
