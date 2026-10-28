@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
@@ -353,10 +355,12 @@ export default function PrizeCard({
               </p>
             </div>
 
-            <div className="absolute left-[7%] right-[7%] bottom-[5%] flex items-end justify-between gap-[3cqw] border-t-[0.6cqw] border-bark pt-[3cqw]">
-              <Field label="Track" value={prize.track} />
-              <NuttyStamp />
-            </div>
+            {!prize.sponsor && (
+              <div className="absolute left-[7%] right-[7%] bottom-[5%] flex items-end justify-between gap-[3cqw] border-t-[0.6cqw] border-bark pt-[3cqw]">
+                <Field label="Track" value={prize.track} />
+                <NuttyStamp />
+              </div>
+            )}
 
             {/* Thick packet outline; half the stroke falls outside the mask */}
             <svg
@@ -391,6 +395,22 @@ export default function PrizeCard({
           {/* Tilt sheen across the whole card */}
           <div className="prize-card-sheen pointer-events-none absolute inset-0" />
         </div>
+
+        {/* Keep the sponsor link accessible outside the decorative print layer.
+            It peels with the paper and stays separate from the peel button. */}
+        {prize.sponsor && (
+          <div className="pointer-events-none absolute inset-0 text-bark" style={{ clipPath: keptClip }}>
+            <div className="absolute left-[7%] right-[7%] bottom-[5%] flex items-end justify-between gap-[3cqw] border-t-[0.6cqw] border-bark pt-[3cqw]">
+              <div>
+                <Field label="Sponsored track" value={prize.sponsor.name} />
+                <Link href={prize.sponsor.href} className="pointer-events-auto mt-[1cqw] block text-[4.2cqw] font-bold underline underline-offset-4 hover:text-pumpkin-dark">
+                  Explore the track <span aria-hidden="true">→</span>
+                </Link>
+              </div>
+              <Image src={prize.sponsor.logo} alt="" width={72} height={72} className="h-auto w-[17cqw] shrink-0 border-[0.6cqw] border-bark" />
+            </div>
+          </div>
+        )}
 
         {/* The lifted flap, mirrored across the fold */}
         {peel && (

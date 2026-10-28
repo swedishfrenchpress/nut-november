@@ -8,9 +8,10 @@ export interface PrizeCardData {
   blurb: string;
   track: string;
   /** Foil finish behind the knockout word; styled in globals.css. */
-  finish: "gold" | "chrome" | "swirl" | "halftone" | "aurora";
+  finish: "gold" | "chrome" | "swirl" | "halftone" | "aurora" | "copper";
   /** The emoji hiding under the sticker when it peels back. */
   reveal: string;
+  sponsor?: { name: string; logo: string; href: string };
 }
 
 export const prizeCards: PrizeCardData[] = [
