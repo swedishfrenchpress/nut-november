@@ -2,7 +2,18 @@
 
 import { useSyncExternalStore } from "react";
 import { STARTS_AT, ENDS_AT } from "../../../shared/hackathon.ts";
-export { STARTS_AT, ENDS_AT, DEADLINE_LABEL, DATES_LABEL } from "../../../shared/hackathon.ts";
+export {
+  STARTS_AT,
+  SHOW_AND_TELL_AT,
+  ENDS_AT,
+  WINNERS_AT,
+  DEADLINE_LABEL,
+  DATES_LABEL,
+} from "../../../shared/hackathon.ts";
+
+export const NOSTR_URL =
+  "https://primal.net/p/nprofile1qqs0y3tvskgs9gpgxxu5ahgz3fmms3rzmxt504qceqtz4a6pdgfwlkghwl6j8";
+export const X_URL = "https://x.com/cashubtc";
 
 export type Phase =
   | { kind: "upcoming"; days: number }
@@ -33,6 +44,18 @@ function subscribe(onChange: () => void) {
 export function usePhase(): Phase | null {
   const key = useSyncExternalStore(subscribe, phaseKey, () => null);
   return key ? (JSON.parse(key) as Phase) : null;
+}
+
+/**
+ * How many of `times` are in the past. Null on the server and first paint,
+ * like usePhase.
+ */
+export function usePassedCount(times: readonly number[]): number | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => times.filter((t) => Date.now() >= t).length,
+    () => null,
+  );
 }
 
 /** "437,335 sats" — prize money is always shown in sats. */

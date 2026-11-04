@@ -24,7 +24,7 @@ export default function PacketPage({
           href="/"
           className="inline-block bg-bark px-4 py-2 font-bold text-cream-deep transition-colors hover:bg-bark-dark"
         >
-          ← Nut November
+          Back
         </Link>
 
         <div className="relative mt-8">

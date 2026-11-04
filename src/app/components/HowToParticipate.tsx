@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { ReactNode } from "react";
+import { NOSTR_URL as nostrUrl } from "../lib/hackathon";
 
 const shareText = "Cashu builders are going nuts this November. https://nutnovember.org/ #NutNovember";
 const shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
-const nostrUrl =
-  "https://primal.net/p/nprofile1qqs0y3tvskgs9gpgxxu5ahgz3fmms3rzmxt504qceqtz4a6pdgfwlkghwl6j8";
 
 const link = "font-semibold text-pumpkin hover:text-pumpkin-dark";
 

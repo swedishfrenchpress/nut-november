@@ -54,9 +54,14 @@ function Page() {
             <a href={submissionFormUrl} className={primaryButton}>
               Continue to CryptPad <span aria-hidden="true">↗</span>
             </a>
-            <Link href="/#faq" className={`${textLink} text-base`}>
-              Questions first?
-            </Link>
+            <div className="flex flex-wrap justify-center gap-x-6 gap-y-2">
+              <Link href="/#rules" className={`${textLink} text-base`}>
+                Read the rules
+              </Link>
+              <Link href="/#faq" className={`${textLink} text-base`}>
+                Questions first?
+              </Link>
+            </div>
           </div>
         </div>
       )}
