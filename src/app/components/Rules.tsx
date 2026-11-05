@@ -6,7 +6,7 @@ const rules: { title: string; body: string }[] = [
     body: "Everything you submit must be made between Nov 1 and the deadline. Code, design and docs all count.",
   },
   {
-    title: "Existing projects are welcome.",
+    title: "Existing projects are welcome; mark what you built in November.",
     body: "If you're building on something that already existed, use the Notes section of the submission form to tell us what was there before Nov 1 and what you added. We judge only the November work, and we may disqualify a project if we can't tell what's new.",
   },
   {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ReactNode } from "react";
 import {
+  BUILDER_CALL_AT,
   ENDS_AT,
   NOSTR_URL,
   SHOW_AND_TELL_AT,
@@ -15,6 +16,20 @@ import {
 const DAY = 86_400_000;
 const link = "font-semibold text-pumpkin hover:text-pumpkin-dark";
 
+const comingSoon = (
+  <>
+    Time and link coming soon on{" "}
+    <a href={X_URL} target="_blank" rel="noopener noreferrer" className={link}>
+      X
+    </a>{" "}
+    and{" "}
+    <a href={NOSTR_URL} target="_blank" rel="noopener noreferrer" className={link}>
+      Nostr
+    </a>
+    .
+  </>
+);
+
 const milestones: { date: string; title: string; body: ReactNode; doneAt: number }[] = [
   {
     date: "Nov 1",
@@ -23,20 +38,23 @@ const milestones: { date: string; title: string; body: ReactNode; doneAt: number
     doneAt: STARTS_AT,
   },
   {
+    date: "Nov 25",
+    title: "Builder call",
+    body: (
+      <>
+        A quick 30-minute call for Nut November builders. Bring questions or show your
+        progress. {comingSoon}
+      </>
+    ),
+    doneAt: BUILDER_CALL_AT + DAY,
+  },
+  {
     date: "Nov 26",
     title: "Show and tell",
     body: (
       <>
         Share what you&apos;re building on the Cashu community monthly call. Optional, and it
-        doesn&apos;t affect judging. Time and link coming soon on{" "}
-        <a href={X_URL} target="_blank" rel="noopener noreferrer" className={link}>
-          X
-        </a>{" "}
-        and{" "}
-        <a href={NOSTR_URL} target="_blank" rel="noopener noreferrer" className={link}>
-          Nostr
-        </a>
-        .
+        doesn&apos;t affect judging. {comingSoon}
       </>
     ),
     doneAt: SHOW_AND_TELL_AT + DAY,
@@ -78,7 +96,7 @@ export default function Timeline() {
           Timeline
         </h2>
 
-        <ol className="mt-12 grid gap-y-10 lg:grid-cols-4 lg:gap-x-10">
+        <ol className="mt-12 grid gap-y-10 lg:grid-cols-5 lg:gap-x-8">
           {milestones.map((m, i) => {
             const done = passed !== null && i < passed;
             const next = passed === i;
@@ -89,7 +107,7 @@ export default function Timeline() {
                 {!last && (
                   <span
                     aria-hidden
-                    className="absolute top-3 -bottom-10 left-[10.5px] w-[3px] bg-bark lg:top-[10.5px] lg:bottom-auto lg:left-3 lg:-right-10 lg:h-[3px] lg:w-auto"
+                    className="absolute top-3 -bottom-10 left-[10.5px] w-[3px] bg-bark lg:top-[10.5px] lg:bottom-auto lg:left-3 lg:-right-8 lg:h-[3px] lg:w-auto"
                   />
                 )}
                 <span

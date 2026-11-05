@@ -1,5 +1,6 @@
 // Nut November 2026 runs Nov 1–27 (UTC).
 export const STARTS_AT = Date.UTC(2026, 10, 1);
+export const BUILDER_CALL_AT = Date.UTC(2026, 10, 25);
 export const SHOW_AND_TELL_AT = Date.UTC(2026, 10, 26);
 export const ENDS_AT = Date.UTC(2026, 10, 28);
 export const WINNERS_AT = Date.UTC(2026, 10, 30);
