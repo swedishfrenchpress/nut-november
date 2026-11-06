@@ -5,7 +5,6 @@ import { STARTS_AT, ENDS_AT } from "../../../shared/hackathon.ts";
 export {
   STARTS_AT,
   BUILDER_CALL_AT,
-  SHOW_AND_TELL_AT,
   ENDS_AT,
   WINNERS_AT,
   DEADLINE_LABEL,

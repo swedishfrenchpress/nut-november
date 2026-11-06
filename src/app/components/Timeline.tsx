@@ -6,7 +6,6 @@ import {
   BUILDER_CALL_AT,
   ENDS_AT,
   NOSTR_URL,
-  SHOW_AND_TELL_AT,
   STARTS_AT,
   WINNERS_AT,
   X_URL,
@@ -15,20 +14,6 @@ import {
 
 const DAY = 86_400_000;
 const link = "font-semibold text-pumpkin hover:text-pumpkin-dark";
-
-const comingSoon = (
-  <>
-    Time and link coming soon on{" "}
-    <a href={X_URL} target="_blank" rel="noopener noreferrer" className={link}>
-      X
-    </a>{" "}
-    and{" "}
-    <a href={NOSTR_URL} target="_blank" rel="noopener noreferrer" className={link}>
-      Nostr
-    </a>
-    .
-  </>
-);
 
 const milestones: { date: string; title: string; body: ReactNode; doneAt: number }[] = [
   {
@@ -39,25 +24,23 @@ const milestones: { date: string; title: string; body: ReactNode; doneAt: number
   },
   {
     date: "Nov 25",
-    title: "Builder call",
+    title: "Builder show and tell",
     body: (
       <>
-        A quick 30-minute call for Nut November builders. Bring questions or show your
-        progress. {comingSoon}
+        A quick 30-minute call for Nut November builders. Show what you&apos;re building or
+        bring questions. Optional, and it doesn&apos;t affect judging. Time and link coming
+        soon on{" "}
+        <a href={X_URL} target="_blank" rel="noopener noreferrer" className={link}>
+          X
+        </a>{" "}
+        and{" "}
+        <a href={NOSTR_URL} target="_blank" rel="noopener noreferrer" className={link}>
+          Nostr
+        </a>
+        .
       </>
     ),
     doneAt: BUILDER_CALL_AT + DAY,
-  },
-  {
-    date: "Nov 26",
-    title: "Show and tell",
-    body: (
-      <>
-        Share what you&apos;re building on the Cashu community monthly call. Optional, and it
-        doesn&apos;t affect judging. {comingSoon}
-      </>
-    ),
-    doneAt: SHOW_AND_TELL_AT + DAY,
   },
   {
     date: "Nov 27, 23:59 UTC",
@@ -96,7 +79,7 @@ export default function Timeline() {
           Timeline
         </h2>
 
-        <ol className="mt-12 grid gap-y-10 lg:grid-cols-5 lg:gap-x-8">
+        <ol className="mt-12 grid gap-y-10 lg:grid-cols-4 lg:gap-x-8">
           {milestones.map((m, i) => {
             const done = passed !== null && i < passed;
             const next = passed === i;
