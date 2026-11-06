@@ -23,7 +23,7 @@ const milestones: { date: string; title: string; body: ReactNode; doneAt: number
     doneAt: STARTS_AT,
   },
   {
-    date: "Nov 25",
+    date: "Nov 17",
     title: "Builder show and tell",
     body: (
       <>
