@@ -11,7 +11,7 @@ const rules: { title: string; body: string }[] = [
   },
   {
     title: `Submit by ${DEADLINE_LABEL}.`,
-    body: "Commits after the deadline don't count. You can resubmit before then to update your entry, and we judge your latest submission.",
+    body: "Commits after the deadline don't count.",
   },
   {
     title: "Teams are welcome.",
@@ -27,7 +27,7 @@ const rules: { title: string; body: string }[] = [
   },
   {
     title: "One prize per project.",
-    body: "Every project is considered for every category but can win only one. Judges can't win prizes. Anyone else can.",
+    body: "Every project is considered for every category but can win only one.",
   },
 ];
 
